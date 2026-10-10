@@ -1,0 +1,128 @@
+# mosWM
+
+`mosWM` is the user-space window manager for Minimal-OS. It owns the display
+and composites windows created by applications through the SDK's `window.h`
+API.
+
+## Build and run
+
+Initialize the repository submodules and install the SDK toolchain as described
+in the [repository README](../README.md). Build from the project root:
+
+```sh
+./mosWM/build.sh
+```
+
+The build creates `mosWM/dist/mosWM.run` and the installable
+`mosWM/dist/mosWM.mpkg`. Installing the package places the executable at
+`0:/programs/mosWM/mosWM.run` and the optional service definition at
+`0:/services/mosWM.service`. Minimal-OS's service manager starts it after the
+boot disk is mounted. Remove that service file and reboot to disable automatic
+startup. Without the service file, the normal Minimal-OS terminal boots and
+remains available.
+
+To start the window manager manually instead, run this from the terminal:
+
+```text
+run 0:/programs/mosWM/mosWM.run
+```
+
+The current MOSdesk program also exclusively owns the framebuffer. Stop it
+before starting `mosWM`; only the display owner can run the compositor or
+receive raw input. If automatic startup is enabled while MOSdesk already owns
+the display, mosWM logs the ownership conflict and exits; Minimal-OS remains
+running.
+
+## Window features
+
+- Rounded, themed window chrome with configurable title-bar, text, border,
+  content, button, and icon colors
+- Move and resize by dragging the title bar and lower-right resize handle
+- Drag to the screen sides for half-screen tiling, to the top edge to maximize,
+  and to screen corners for quarter-screen tiling
+- Focus, minimize, maximize, restore, and fullscreen, with an app switcher on
+  the taskbar
+- Content surfaces resized to match the app window; the app receives a
+  `windowsizechange_recall` callback event with the new content dimensions
+- Per-window input queues; keyboard input is routed to the focused window and
+  pointer events to the window under the cursor
+
+Window positions are desktop coordinates. Width and height describe the
+application's content surface; decorations are managed separately by `mosWM`.
+Applications render ARGB8888 pixels into their own buffer and publish updates
+through the window API. The kernel copies those pixels into the corresponding
+window surface; applications never receive another application's surface
+pointer.
+
+## Application API
+
+Include `window.h` from the SDK. A window's owner can create, title, resize,
+style, minimize, maximize, fullscreen, hide, show, or close its own windows.
+The process that launched an application may also manage windows belonging to
+its child processes; unrelated processes cannot query or modify them.
+
+```c
+#include "window.h"
+#include "stdlib.h"
+#include "string.h"
+
+static uint32_t window_id;
+static uint32_t* pixels;
+static uint32_t surface_width = 640;
+static uint32_t surface_height = 360;
+
+static void resized(uint32_t id, uint32_t width, uint32_t height) {
+    (void)id;
+    uint32_t* resized_pixels =
+        realloc(pixels, (size_t)width * height * sizeof(uint32_t));
+    if (!resized_pixels) {
+        mos_window_close(window_id);
+        mos_exit(1);
+    }
+    pixels = resized_pixels;
+    surface_width = width;
+    surface_height = height;
+    memset(pixels, 0, (size_t)width * height * sizeof(uint32_t));
+}
+
+static void close_requested(uint32_t id) {
+    mos_window_close(id);
+    free(pixels);
+    mos_exit(0);
+}
+
+int main(void) {
+    window_id = mos_window_create(0, 80, 64, surface_width, surface_height,
+                                  "Example");
+    if (!window_id) return 1;
+    pixels = calloc((size_t)surface_width * surface_height, sizeof(uint32_t));
+    if (!pixels) {
+        mos_window_close(window_id);
+        return 1;
+    }
+
+    mos_window_callbacks_t callbacks = {
+        .onwindowclose = close_requested,
+        .windowsizechange_recall = resized
+    };
+
+    for (;;) {
+        mos_window_present(window_id, pixels,
+                           surface_width * sizeof(uint32_t),
+                           0, 0, surface_width, surface_height);
+        mos_window_dispatch_events(window_id, &callbacks);
+        mos_sleep(16);
+    }
+}
+```
+
+The event dispatcher invokes `onwindowclose`, `onwindowminimize`,
+`onwindowmaximise`, `windowsizechange_recall`, and `onwindowfocus` callbacks
+when the app polls its event queue. The app should handle a close request and
+call `mos_window_close()` if it accepts it. A window may be made non-resizable
+with `mos_window_set_resizable(id, false)`.
+
+The window-server role is granted only when the installed `mosWM.run` is
+launched by the OS terminal. An application that launches a copy as a child
+does not gain server privileges. The server must also own the framebuffer
+before it can register.
