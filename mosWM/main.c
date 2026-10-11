@@ -5,14 +5,22 @@
 #include "graphics.h"
 #include "string.h"
 #include "window.h"
+#include "file_icons.h"
+#define MOSDESK_SYSCALL mos_syscall3
+#include "../mosdesk/settings.h"
+
+#ifndef SYS_EXEC
+#define SYS_EXEC 33u
+#endif
 
 #define SYS_HEAP_ALLOC 1u
 #define SYS_HEAP_FREE 2u
 #define MAX_WINDOWS SYSCALL_WINDOW_MAX_WINDOWS
-#define TASKBAR_HEIGHT 36u
+#define TASKBAR_HEIGHT 48u
 #define TITLE_HEIGHT 28u
 #define CORNER_RADIUS 9u
 #define SNAP_DISTANCE 24
+#define CURSOR_MAX_SIZE 32u
 #define DRAG_NONE 0u
 #define DRAG_MOVE 1u
 #define DRAG_RESIZE 2u
@@ -39,7 +47,18 @@ static uint32_t* canvas;
 static cached_window_t cache[MAX_WINDOWS];
 static int32_t cursor_x;
 static int32_t cursor_y;
+static int32_t mouse_remainder_x;
+static int32_t mouse_remainder_y;
 static uint32_t focused_id;
+static uint32_t cursor_pixels[CURSOR_MAX_SIZE * CURSOR_MAX_SIZE];
+static uint32_t cursor_width;
+static uint32_t cursor_height;
+static uint32_t cursor_hotspot_x;
+static uint32_t cursor_hotspot_y;
+static uint32_t cursor_fill_color = 0xFFFFFFFFu;
+static uint32_t cursor_scale = 1u;
+static uint32_t mouse_speed = 100u;
+static uint32_t accent_color = 0xFF59A6D8u;
 static uint32_t dragging_id;
 static uint32_t drag_mode;
 static uint32_t drag_start_x;
@@ -52,6 +71,12 @@ static uint8_t previous_buttons;
 static bool start_menu_open;
 static char status_message[64];
 static bool screen_owned;
+static uint32_t settings_poll_frames;
+
+extern long mos_open(const char* path, long flags);
+extern long mos_read(long fd, void* buffer, size_t length);
+extern long mos_close(long fd);
+extern long mos_size(long fd);
 
 static void* wm_malloc(size_t size) {
     uint64_t result = mos_syscall3(SYS_HEAP, SYS_HEAP_ALLOC, 0, size);
@@ -64,6 +89,115 @@ static void wm_free(void* pointer) {
     if (pointer)
         mos_syscall3(SYS_HEAP, SYS_HEAP_FREE,
                      (uint64_t)(uintptr_t)pointer, 0);
+}
+
+static void load_desktop_settings(void) {
+    mosdesk_settings_t settings = mosdesk_settings_load();
+    mouse_speed = settings.mouse_speed;
+    accent_color = settings.accent_color;
+    cursor_fill_color = settings.cursor_fill;
+    cursor_scale = settings.cursor_scale;
+}
+
+static uint16_t read_u16le(const uint8_t* bytes) {
+    return (uint16_t)bytes[0] | (uint16_t)((uint16_t)bytes[1] << 8u);
+}
+
+static uint32_t read_u32le(const uint8_t* bytes) {
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) |
+           ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
+}
+
+static bool load_cursor(void) {
+    long fd = mos_open("0:/programs/mosWM/assets/posy.cur", 0);
+    if (fd < 0) return false;
+    long file_size = mos_size(fd);
+    if (file_size < 22 || file_size > 1024 * 1024) {
+        mos_close(fd);
+        return false;
+    }
+    uint8_t* data = (uint8_t*)wm_malloc((size_t)file_size);
+    if (!data) {
+        mos_close(fd);
+        return false;
+    }
+    size_t total = 0;
+    while (total < (size_t)file_size) {
+        long got = mos_read(fd, data + total, (size_t)file_size - total);
+        if (got <= 0) break;
+        total += (size_t)got;
+    }
+    mos_close(fd);
+    if (total != (size_t)file_size || read_u16le(data) != 0u ||
+        read_u16le(data + 2) != 2u) {
+        wm_free(data);
+        return false;
+    }
+
+    uint16_t count = read_u16le(data + 4);
+    uint32_t best_offset = 0;
+    uint32_t best_size = 0;
+    uint32_t best_distance = UINT32_MAX;
+    for (uint32_t i = 0; i < count; i++) {
+        size_t entry_offset = 6u + (size_t)i * 16u;
+        if (entry_offset + 16u > total) break;
+        uint32_t width = data[entry_offset] ? data[entry_offset] : 256u;
+        uint32_t height = data[entry_offset + 1] ? data[entry_offset + 1] : 256u;
+        uint32_t resource_size = read_u32le(data + entry_offset + 8u);
+        uint32_t image_offset = read_u32le(data + entry_offset + 12u);
+        if (image_offset > total || resource_size > total - image_offset ||
+            resource_size < 40u)
+            continue;
+        uint32_t distance = width > CURSOR_MAX_SIZE
+            ? width - CURSOR_MAX_SIZE : CURSOR_MAX_SIZE - width;
+        if (height > CURSOR_MAX_SIZE) distance += height - CURSOR_MAX_SIZE;
+        else distance += CURSOR_MAX_SIZE - height;
+        if (distance < best_distance) {
+            best_distance = distance;
+            best_offset = image_offset;
+            best_size = resource_size;
+            cursor_width = width;
+            cursor_height = height;
+            cursor_hotspot_x = read_u16le(data + entry_offset + 4u);
+            cursor_hotspot_y = read_u16le(data + entry_offset + 6u);
+        }
+    }
+
+    bool loaded = false;
+    if (best_offset && cursor_width <= CURSOR_MAX_SIZE &&
+        cursor_height <= CURSOR_MAX_SIZE && best_size >= 40u) {
+        const uint8_t* dib = data + best_offset;
+        uint32_t header_size = read_u32le(dib);
+        int32_t dib_width = (int32_t)read_u32le(dib + 4u);
+        int32_t dib_height = (int32_t)read_u32le(dib + 8u);
+        uint16_t bits_per_pixel = read_u16le(dib + 14u);
+        uint32_t compression = read_u32le(dib + 16u);
+        size_t pixel_offset = header_size;
+        size_t pixel_bytes = (size_t)cursor_width * cursor_height * 4u;
+        if (header_size >= 40u && dib_width == (int32_t)cursor_width &&
+            dib_height == (int32_t)(cursor_height * 2u) &&
+            bits_per_pixel == 32u && compression == 0u &&
+            pixel_offset <= best_size && pixel_bytes <= best_size - pixel_offset) {
+            const uint8_t* source = dib + pixel_offset;
+            for (uint32_t y = 0; y < cursor_height; y++) {
+                uint32_t source_y = cursor_height - 1u - y;
+                for (uint32_t x = 0; x < cursor_width; x++) {
+                    size_t source_index =
+                        ((size_t)source_y * cursor_width + x) * 4u;
+                    uint8_t blue = source[source_index];
+                    uint8_t green = source[source_index + 1u];
+                    uint8_t red = source[source_index + 2u];
+                    uint8_t alpha = source[source_index + 3u];
+                    cursor_pixels[(size_t)y * CURSOR_MAX_SIZE + x] =
+                        ((uint32_t)alpha << 24u) | ((uint32_t)red << 16u) |
+                        ((uint32_t)green << 8u) | blue;
+                }
+            }
+            loaded = true;
+        }
+    }
+    wm_free(data);
+    return loaded;
 }
 
 static void log_message(const char* message) {
@@ -113,6 +247,28 @@ static void fill_rect(int32_t x, int32_t y, int32_t width, int32_t height,
     }
 }
 
+static void draw_wallpaper_line(int32_t x0, int32_t y0, int32_t x1,
+                                int32_t y1, uint32_t color) {
+    int32_t dx = x1 >= x0 ? x1 - x0 : x0 - x1;
+    int32_t sx = x0 < x1 ? 1 : -1;
+    int32_t dy = y1 >= y0 ? y0 - y1 : y1 - y0;
+    int32_t sy = y0 < y1 ? 1 : -1;
+    int32_t error = dx + dy;
+    for (;;) {
+        put_pixel(x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        int32_t twice_error = error * 2;
+        if (twice_error >= dy) {
+            error += dy;
+            x0 += sx;
+        }
+        if (twice_error <= dx) {
+            error += dx;
+            y0 += sy;
+        }
+    }
+}
+
 static void fill_rounded_rect(int32_t x, int32_t y, int32_t width,
                               int32_t height, uint32_t radius,
                               uint32_t color) {
@@ -142,14 +298,44 @@ static void fill_rounded_rect(int32_t x, int32_t y, int32_t width,
 static void draw_wallpaper(void) {
     for (uint32_t y = 0; y < display.height; y++) {
         for (uint32_t x = 0; x < display.width; x++) {
-            uint32_t red = 15u + x * 24u / display.width;
-            uint32_t green = 37u + y * 58u / display.height;
-            uint32_t blue = 66u + (x + y) * 48u /
+            uint32_t red = 14u + x * 17u / display.width;
+            uint32_t green = 27u + y * 33u / display.height;
+            uint32_t blue = 48u + (x + y) * 45u /
                                       (display.width + display.height);
             canvas[(size_t)y * display.width + x] =
                 0xFF000000u | red << 16 | green << 8 | blue;
         }
     }
+
+    int32_t logo_left = (int32_t)(display.width * 58u / 100u);
+    int32_t logo_right = (int32_t)(display.width * 88u / 100u);
+    int32_t logo_top = (int32_t)(display.height * 24u / 100u);
+    int32_t logo_middle_x = (int32_t)(display.width * 72u / 100u);
+    int32_t logo_middle_y = (int32_t)(display.height * 51u / 100u);
+    int32_t logo_bottom = (int32_t)(display.height * 80u / 100u);
+    uint32_t beam = 0x1859A6D8u;
+    draw_wallpaper_line(logo_left, logo_top, logo_middle_x, logo_middle_y, beam);
+    draw_wallpaper_line(logo_right, logo_top, logo_middle_x, logo_middle_y, beam);
+    draw_wallpaper_line(logo_right, logo_top, logo_left, logo_bottom, beam);
+    draw_wallpaper_line(logo_left, logo_bottom, logo_right, logo_bottom, beam);
+    draw_wallpaper_line((logo_middle_x + logo_right) / 2,
+                        (logo_middle_y + logo_bottom) / 2,
+                        logo_right, logo_bottom, beam);
+}
+
+static void draw_desktop_icons(void) {
+    static const struct {
+        moswm_file_icon_t icon;
+        const char* label;
+    } items[] = {
+        {MOSWM_ICON_FOLDER, "Home"},
+        {MOSWM_ICON_DRIVE, "System"},
+        {MOSWM_ICON_DOCUMENT, "Readme"},
+        {MOSWM_ICON_CODE, "Source"}
+    };
+    for (uint32_t i = 0; i < sizeof(items) / sizeof(items[0]); i++)
+        moswm_draw_file_icon(canvas, display.width, display.height,
+                             24, 30 + (int32_t)i * 66, items[i].icon);
 }
 
 static cached_window_t* cache_for(uint32_t id) {
@@ -401,20 +587,40 @@ static void draw_chrome_text(const syscall_window_info_t* info) {
 }
 
 static void draw_cursor(void) {
-    static const char* shape[] = {
-        "#...........", "##..........", "#x#.........",
-        "#xx#........", "#xxx#.......", "#xxxx#......",
-        "#xxxxx#.....", "#xxxxxx#....", "#xxxxxxx#...",
-        "#xxxxxxxx#..", "#xxxxx###...", "#xx#xx#......"
-    };
-    for (uint32_t y = 0; y < 12; y++) {
-        for (uint32_t x = 0; x < 12; x++) {
-            if (shape[y][x] == '#')
-                put_pixel(cursor_x + (int32_t)x, cursor_y + (int32_t)y,
-                          0xFF10191Du);
-            else if (shape[y][x] == 'x')
-                put_pixel(cursor_x + (int32_t)x, cursor_y + (int32_t)y,
-                          0xFFFFFFFFu);
+    if (!cursor_width || !cursor_height) {
+        static const char* fallback[] = {
+            "#...........", "##..........", "#x#.........",
+            "#xx#........", "#xxx#.......", "#xxxx#......",
+            "#xxxxx#.....", "#xxxxxx#....", "#xxxxxxx#...",
+            "#xxxxxxxx#..", "#xxxxx###...", "#xx#xx#......"
+        };
+        cursor_width = 12;
+        cursor_height = 12;
+        for (uint32_t y = 0; y < cursor_height; y++) {
+            for (uint32_t x = 0; x < cursor_width; x++) {
+                char pixel = fallback[y][x];
+                if (pixel == '#')
+                    cursor_pixels[y * CURSOR_MAX_SIZE + x] = 0xFF10191Du;
+                else if (pixel == 'x')
+                    cursor_pixels[y * CURSOR_MAX_SIZE + x] = 0xFFFFFFFFu;
+            }
+        }
+    }
+    int32_t origin_x = cursor_x - (int32_t)(cursor_hotspot_x * cursor_scale);
+    int32_t origin_y = cursor_y - (int32_t)(cursor_hotspot_y * cursor_scale);
+    for (uint32_t y = 0; y < cursor_height; y++) {
+        for (uint32_t x = 0; x < cursor_width; x++) {
+            uint32_t color = cursor_pixels[y * CURSOR_MAX_SIZE + x];
+            if (!(color >> 24u)) continue;
+            if (((color >> 16u) & 255u) > 210u &&
+                ((color >> 8u) & 255u) > 210u && (color & 255u) > 210u)
+                color = (color & 0xFF000000u) | (cursor_fill_color & 0x00FFFFFFu);
+            for (uint32_t sy = 0; sy < cursor_scale; sy++) {
+                for (uint32_t sx = 0; sx < cursor_scale; sx++) {
+                    put_pixel(origin_x + (int32_t)(x * cursor_scale + sx),
+                              origin_y + (int32_t)(y * cursor_scale + sy), color);
+                }
+            }
         }
     }
 }
@@ -423,26 +629,32 @@ static void draw_taskbar(const syscall_window_info_t* windows,
                          uint64_t count) {
     uint32_t top = display.height - TASKBAR_HEIGHT;
     fill_rect(0, (int32_t)top, (int32_t)display.width,
-              (int32_t)TASKBAR_HEIGHT, 0xF018252Du);
-    fill_rect(0, (int32_t)top, (int32_t)display.width, 2, 0xFF77D2C5u);
-    fill_rounded_rect(9, (int32_t)top + 6, 26, 24, 5, 0xFF77D2C5u);
-    uint32_t x = 48;
-    for (uint64_t i = 0; i < count && x + 100 < display.width - 150; i++) {
+              (int32_t)TASKBAR_HEIGHT, 0xF0131A24u);
+    fill_rect(0, (int32_t)top, (int32_t)display.width, 1, 0xFF647786u);
+    fill_rect(49, (int32_t)top + 8, 1, 32, 0xFF33434Fu);
+    uint32_t x = 60;
+    for (uint64_t i = 0; i < count && x + 184 < display.width - 126; i++) {
         const syscall_window_info_t* info = &windows[i];
-        uint32_t color = info->id == focused_id ? 0xFF354B54u : 0xFF23363Eu;
-        fill_rounded_rect((int32_t)x, (int32_t)top + 5, 96, 26, 5, color);
-        x += 101;
+        uint32_t color = info->id == focused_id ? 0xFF263945u : 0x00131A24u;
+        fill_rect((int32_t)x, (int32_t)top + 5, 176, 38, color);
+        if (info->id == focused_id)
+            fill_rect((int32_t)x, (int32_t)top + 45, 176, 2, accent_color);
+        x += 180;
     }
     if (start_menu_open) {
-        fill_rounded_rect(10, (int32_t)top - 148, 210, 138, 8,
-                          0xF025363Eu);
-        fill_rect(20, (int32_t)top - 128, 190, 1, 0xFF526A72u);
+        fill_rect(12, (int32_t)top - 268, 286, 258, 0xF018222Du);
+        fill_rect(12, (int32_t)top - 268, 3, 258, accent_color);
+        fill_rect(30, (int32_t)top - 223, 250, 1, 0xFF3B4A56u);
+        fill_rect(30, (int32_t)top - 166, 250, 36, 0xFF263945u);
+        fill_rect(30, (int32_t)top - 46, 250, 1, 0xFF3B4A56u);
+        moswm_draw_file_icon(canvas, display.width, display.height,
+            35, (int32_t)top - 163, MOSWM_ICON_SETTINGS);
     }
-    draw_cursor();
 }
 
 static void render(const syscall_window_info_t* windows, uint64_t count) {
     draw_wallpaper();
+    draw_desktop_icons();
     for (uint32_t focus_pass = 0; focus_pass < 2; focus_pass++) {
         for (uint64_t i = 0; i < count; i++) {
             const syscall_window_info_t* info = &windows[i];
@@ -457,6 +669,7 @@ static void render(const syscall_window_info_t* windows, uint64_t count) {
         }
     }
     draw_taskbar(windows, count);
+    draw_cursor();
     if (mos_graphics_blit_surface(canvas, display.width, display.height,
             display.width * sizeof(uint32_t), 0, 0,
             (int32_t)display.width, (int32_t)display.height, 0, 0,
@@ -471,10 +684,31 @@ static void render(const syscall_window_info_t* windows, uint64_t count) {
             continue;
         draw_chrome_text(info);
     }
-    mos_graphics_text("MOS", 14, (int32_t)display.height - 28,
-                     24, 48, 55);
-    uint32_t x = 52;
-    for (uint64_t i = 0; i < count && x + 94 < display.width - 150; i++) {
+    int32_t logo_x = 12;
+    int32_t logo_y = (int32_t)display.height - (int32_t)TASKBAR_HEIGHT + 11;
+    uint8_t accent_red = (uint8_t)(accent_color >> 16u);
+    uint8_t accent_green = (uint8_t)(accent_color >> 8u);
+    uint8_t accent_blue = (uint8_t)accent_color;
+    mos_graphics_line(logo_x, logo_y, logo_x + 27, logo_y,
+                      accent_red, accent_green, accent_blue);
+    mos_graphics_line(logo_x, logo_y, logo_x + 10, logo_y + 10,
+                      accent_red, accent_green, accent_blue);
+    mos_graphics_line(logo_x + 27, logo_y, logo_x + 1, logo_y + 25,
+                      accent_red, accent_green, accent_blue);
+    mos_graphics_line(logo_x + 1, logo_y + 25, logo_x + 27, logo_y + 25,
+                      accent_red, accent_green, accent_blue);
+    mos_graphics_line(logo_x + 18, logo_y + 15, logo_x + 27, logo_y + 25,
+                      accent_red, accent_green, accent_blue);
+    mos_graphics_text("MOSDESK", 64, (int32_t)display.height - 31,
+                     224, 233, 239);
+    static const char* desktop_labels[] = {
+        "Home", "System", "Readme", "Source"
+    };
+    for (uint32_t i = 0; i < 4; i++)
+        mos_graphics_text(desktop_labels[i], 21,
+            65 + (int32_t)i * 66, 234, 241, 245);
+    uint32_t x = 64;
+    for (uint64_t i = 0; i < count && x + 172 < display.width - 126; i++) {
         char title[SYSCALL_WINDOW_MAX_TITLE];
         uint32_t j = 0;
         while (j < 10 && windows[i].title[j]) {
@@ -482,17 +716,18 @@ static void render(const syscall_window_info_t* windows, uint64_t count) {
             j++;
         }
         title[j] = '\0';
-        mos_graphics_text(title, (int32_t)x + 6,
-            (int32_t)display.height - 25, 238, 245, 246);
-        x += 101;
+        mos_graphics_text(title, (int32_t)x + 8,
+            (int32_t)display.height - 29, 224, 233, 239);
+        x += 180;
     }
     if (start_menu_open) {
-        mos_graphics_text("Open windows", 22,
-            (int32_t)display.height - (int32_t)TASKBAR_HEIGHT - 136,
-            255, 255, 255);
-        mos_graphics_text("Click an app to focus", 22,
-            (int32_t)display.height - (int32_t)TASKBAR_HEIGHT - 116,
-            185, 208, 210);
+        int32_t top = (int32_t)display.height - (int32_t)TASKBAR_HEIGHT;
+        mos_graphics_text("MOSdesk", 30, top - 254, 242, 246, 249);
+        mos_graphics_text("SYSTEM", 30, top - 220, 155, 175, 188);
+        mos_graphics_text("MOSdesk Settings", 42, top - 154,
+                          242, 246, 249);
+        mos_graphics_text("Open windows from the panel", 30, top - 33,
+                          155, 175, 188);
     }
     if (status_message[0])
         mos_graphics_text(status_message, 8, 8, 255, 230, 150);
@@ -617,13 +852,28 @@ static void move_dragged_window(syscall_window_info_t* windows,
 
 static void on_mouse_down(syscall_window_info_t* windows, uint64_t count) {
     uint32_t taskbar_y = display.height - TASKBAR_HEIGHT;
+    if (start_menu_open && cursor_x >= 12 && cursor_x < 298 &&
+        cursor_y >= (int32_t)taskbar_y - 268 &&
+        cursor_y < (int32_t)taskbar_y - 10) {
+        if (cursor_y >= (int32_t)taskbar_y - 166 &&
+            cursor_y < (int32_t)taskbar_y - 130) {
+            const char* settings_path = "0:/programs/mosdesk/mosdesk.run";
+            int64_t process_id = (int64_t)mos_syscall3(SYS_EXEC,
+                (uint64_t)(uintptr_t)settings_path, 0, 0);
+            if (process_id < 0)
+                strcpy(status_message, "Unable to open MOSdesk Settings");
+            start_menu_open = false;
+        }
+        return;
+    }
     if ((uint32_t)cursor_y >= taskbar_y) {
         if (cursor_x < 44) {
             start_menu_open = !start_menu_open;
             return;
         }
-        uint32_t index = ((uint32_t)cursor_x - 48u) / 101u;
-        if (cursor_x >= 48 && index < count) {
+        uint32_t index = cursor_x >= 60
+            ? ((uint32_t)cursor_x - 60u) / 180u : UINT32_MAX;
+        if (cursor_x >= 60 && index < count) {
             syscall_window_info_t* info = &windows[index];
             if (info->flags & SYSCALL_WINDOW_MINIMIZED) {
                 cached_window_t* entry = cache_for(info->id);
@@ -725,8 +975,12 @@ static void on_mouse_up(syscall_window_info_t* windows, uint64_t count) {
 static void route_input(const syscall_input_event_t* input,
                         syscall_window_info_t* windows, uint64_t count) {
     if (input->type == SYSCALL_INPUT_MOUSE_MOVE) {
-        cursor_x += input->dx;
-        cursor_y += input->dy;
+        int32_t scaled_x = input->dx * (int32_t)mouse_speed + mouse_remainder_x;
+        int32_t scaled_y = input->dy * (int32_t)mouse_speed + mouse_remainder_y;
+        cursor_x += scaled_x / 100;
+        cursor_y += scaled_y / 100;
+        mouse_remainder_x = scaled_x % 100;
+        mouse_remainder_y = scaled_y % 100;
         if (cursor_x < 0) cursor_x = 0;
         if (cursor_y < 0) cursor_y = 0;
         if ((uint32_t)cursor_x >= display.width)
@@ -851,10 +1105,16 @@ int main(void) {
     }
     cursor_x = (int32_t)(display.width / 2u);
     cursor_y = (int32_t)(display.height / 2u);
+    load_desktop_settings();
+    load_cursor();
     syscall_window_info_t windows[MAX_WINDOWS];
     syscall_input_event_t input[32];
 
     for (;;) {
+        if (++settings_poll_frames >= 30u) {
+            settings_poll_frames = 0;
+            load_desktop_settings();
+        }
         uint64_t count = mos_window_list(windows, MAX_WINDOWS);
         if (count > MAX_WINDOWS) {
             strcpy(status_message, "Unable to enumerate windows");

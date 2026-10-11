@@ -27,11 +27,12 @@ To start the window manager manually instead, run this from the terminal:
 run 0:/programs/mosWM/mosWM.run
 ```
 
-The current MOSdesk program also exclusively owns the framebuffer. Stop it
-before starting `mosWM`; only the display owner can run the compositor or
-receive raw input. If automatic startup is enabled while MOSdesk already owns
-the display, mosWM logs the ownership conflict and exits; Minimal-OS remains
-running.
+MOSdesk is hosted by mosWM. The installed mosWM service owns the framebuffer,
+draws the desktop and taskbar, and provides MOSdesk Settings from the start
+menu. Do not launch the legacy standalone framebuffer build alongside mosWM.
+
+The default pointer is the user-supplied Posy cursor resource. Its fill color,
+scale, pointer speed, and desktop accent can be adjusted in MOSdesk Settings.
 
 ## Window features
 

@@ -8,4 +8,3 @@ operatingsystem=MINIMALOS
 [Install.minimalos]
 copy=mosdesk.run,ttrend_raster.slib,ttrend_outline.slib,fonts/arial.font,fonts/roboto.font,fonts/default.font
 target=0:/programs/mosdesk
-run=0:/programs/mosdesk/mosdesk.run

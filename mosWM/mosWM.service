@@ -1,6 +1,6 @@
 [GENERAL]
 name="mosWM"
-desc="graphical window manager for mosDesk"
+desc="MOSdesk graphical desktop and window manager"
 exit=None
 
 [STARTUP]

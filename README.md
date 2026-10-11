@@ -13,8 +13,8 @@ The project is split into a desktop implementation, the Minimal-OS SDK toolchain
 
 ## Repository layout
 
-- `mosdesk/` — desktop source, build script, generated fonts, and packaging metadata
-- `mosWM/` — the Minimal-OS window manager, compositor, and protected application window API
+- `mosdesk/` — MOSdesk Settings client, reusable file-type icon library, preview, and packaging metadata
+- `mosWM/` — the MOSdesk desktop, compositor, cursor, and protected application window API
 - `Minimal-OS-SDK/` — toolchain and build utilities for freestanding C/C++ programs and `.slib` bundles
 - `Minimal-OS/` — Minimal-OS source tree used by the SDK and runtime
 - `msdk` — convenience wrapper for invoking the SDK toolchain
@@ -42,34 +42,47 @@ From the repository root:
 ./mosdesk/build.sh
 ```
 
-The build script creates the desktop bundle and the exported text-rendering libraries, then packages them under `mosdesk/dist/`.
+The build script creates the MOSdesk Settings window client and exported text-rendering libraries, then packages them under `mosdesk/dist/`.
+
+## Preview MOSdesk
+
+To view the desktop layout in a browser without building or booting Minimal-OS:
+
+```sh
+./mosdesk/preview.sh
+```
+
+Open `/mosdesk/preview.html` on port 8000 in the Codespaces Ports panel. This
+browser preview recreates the desktop appearance; it does not run the
+Minimal-OS executable.
 
 ## Build mosWM
 
-`mosWM` is an optional user-space window manager, built separately from MOSdesk
-because both programs currently claim exclusive ownership of the framebuffer:
+`mosWM` is the desktop shell and window manager. Build its desktop package with:
 
 ```sh
 ./mosWM/build.sh
 ```
 
 This produces `mosWM/dist/mosWM.run` and the installable
-`mosWM/dist/mosWM.mpkg`. Minimal-OS continues to boot into its normal terminal
-without mosWM installed. Installing the package places its executable in
-`0:/programs/mosWM` and its optional `mosWM.service` module definition in
-`0:/services`; the latter opts into automatic startup after the boot disk is
-mounted. Remove the service file and reboot to disable automatic startup.
-Alternatively, install only the executable and start the manager manually
-from the Minimal-OS terminal:
+`mosWM/dist/mosWM.mpkg`. Installing the package places its executable, default
+cursor, and `mosWM.service` module definition in the OS. The service starts the
+desktop after the boot disk is mounted. MOSdesk Settings is opened from the
+Start menu and saves desktop preferences for future sessions. Its default
+pointer resource is the user-supplied Posy cursor; attribution is included in
+the package.
+
+The standalone manager can also be started manually from the Minimal-OS
+terminal:
 
 ```text
 run 0:/programs/mosWM/mosWM.run
 ```
 
-The OS service manager starts the registered window-manager module as a
-supervised user process. If the program or service definition is absent,
-service discovery skips it and the built-in terminal remains available.
-Applications can use the SDK's [`window.h`](Minimal-OS-SDK/include/window.h)
+The OS service manager starts the registered desktop as a supervised user
+process. If the program or service definition is absent, service discovery
+skips it and the built-in terminal remains available. Applications can use the
+SDK's [`window.h`](Minimal-OS-SDK/include/window.h)
 API to create and manage their own windows. Kernel-enforced ownership prevents
 unrelated applications from accessing window state, input events, or frame
 buffers. See [mosWM/README.md](mosWM/README.md) for the API and behavior.

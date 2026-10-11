@@ -1,0 +1,4 @@
+Default pointer asset: Posy's Cursor by Michiel de Boer.
+Original source: https://www.michieldb.nl/other/cursors
+Included file: Posy cursor.cur
+The supplied archive did not include redistribution license terms.

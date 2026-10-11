@@ -6,5 +6,5 @@ arch=x86_64
 operatingsystem=MINIMALOS
 
 [Install.minimalos]
-copy=programs/mosWM/mosWM.run,services/mosWM.service
+copy=programs/mosWM/mosWM.run,programs/mosWM/assets/posy.cur,programs/mosWM/assets/NOTICE.txt,services/mosWM.service
 target=0:/

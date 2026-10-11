@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#172a3b">
+  <title>MOSdesk Preview</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Segoe UI", "Noto Sans", sans-serif;
+      font-synthesis: none;
+      background: #101820;
+      color: #e8eef2;
+      --accent: #55a8dc;
+      --cursor-fill: #fff;
+      --panel: #171f28;
+      --panel-edge: #44525d;
+      --scale: 1;
+      cursor: url("../mosWM/assets/posy.cur") 0 0, default;
+    }
+    * { box-sizing: border-box; }
+    body { height: 100dvh; min-height: 420px; margin: 0; overflow: hidden; }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    .desktop {
+      position: relative;
+      height: 100%;
+      overflow: hidden;
+      isolation: isolate;
+      background:
+        radial-gradient(ellipse at 72% 49%, #28658a 0, #205078 18%, transparent 49%),
+        radial-gradient(ellipse at 98% 4%, #427e9a 0, transparent 36%),
+        linear-gradient(119deg, #15283a 5%, #183b57 57%, #142c42 100%);
+    }
+    .desktop::before {
+      position: absolute;
+      z-index: -1;
+      content: "";
+      inset: -40% -12% -20% 38%;
+      transform: rotate(-28deg);
+      border: 1px solid #96cbdf26;
+      box-shadow: 0 0 0 18px #96cbdf08, 0 0 0 74px #96cbdf09,
+                  0 0 0 178px #96cbdf08, 0 0 0 350px #96cbdf05;
+    }
+    .desktop::after {
+      position: absolute;
+      z-index: -1;
+      content: "";
+      inset: auto 0 48px;
+      height: 1px;
+      background: #d3e4ec28;
+    }
+    .icon-grid {
+      position: absolute;
+      top: 24px;
+      bottom: 62px;
+      left: 22px;
+      display: grid;
+      grid-auto-flow: column;
+      grid-template-rows: repeat(6, 82px);
+      grid-auto-columns: 90px;
+      align-content: start;
+      gap: 5px 3px;
+    }
+    .desktop-item {
+      width: 86px;
+      min-height: 78px;
+      padding: 7px 4px 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      border: 1px solid transparent;
+      background: transparent;
+      text-align: center;
+      cursor: inherit;
+    }
+    .desktop-item:hover, .desktop-item:focus-visible {
+      border-color: #b9ddf17a;
+      outline: 0;
+      background: #b9ddf124;
+    }
+    .file-icon { width: 42px; height: 42px; filter: drop-shadow(0 2px 2px #09131b70); }
+    .desktop-item span { max-width: 78px; color: #f3f7fa; font-size: 12px; line-height: 15px; text-shadow: 0 1px 3px #101c28; }
+    .taskbar {
+      position: absolute;
+      z-index: 5;
+      inset: auto 0 0;
+      height: 48px;
+      display: flex;
+      align-items: stretch;
+      background: #111820ed;
+      border-top: 1px solid #8294a254;
+      box-shadow: 0 -5px 20px #0d172022;
+      backdrop-filter: blur(16px);
+    }
+    .taskbar button { border: 0; background: transparent; cursor: inherit; }
+    .start-button {
+      width: 52px;
+      display: grid;
+      place-items: center;
+      border-right: 1px solid #ffffff0b !important;
+    }
+    .start-button:hover, .start-button[aria-expanded="true"] { background: #ffffff14; }
+    .start-logo { width: 34px; height: 34px; object-fit: contain; }
+    .task-apps { display: flex; align-items: stretch; gap: 3px; padding-left: 5px; }
+    .task-app {
+      width: 46px;
+      display: grid;
+      place-items: center;
+      border-bottom: 2px solid transparent !important;
+    }
+    .task-app:hover, .task-app[aria-current="true"] { background: #ffffff12; border-bottom-color: var(--accent) !important; }
+    .task-app .file-icon { width: 24px; height: 24px; }
+    .tray { margin-left: auto; padding: 0 15px; display: flex; align-items: center; gap: 14px; color: #dce6eb; font-size: 12px; }
+    .tray-network { width: 15px; height: 12px; border: 1px solid #c9d6dc; border-width: 1px 0 0; border-radius: 50% 50% 0 0; position: relative; }
+    .tray-network::before { position: absolute; content: ""; left: 3px; top: 3px; width: 7px; height: 6px; border: 1px solid #c9d6dc; border-bottom: 0; border-radius: 8px 8px 0 0; }
+    .tray-network::after { position: absolute; content: ""; bottom: 0; left: 6px; width: 3px; height: 3px; border-radius: 50%; background: #c9d6dc; }
+    .tray-clock { min-width: 45px; text-align: right; }
+    .start-menu {
+      position: absolute;
+      z-index: 4;
+      left: 8px;
+      bottom: 56px;
+      width: min(356px, calc(100vw - 16px));
+      padding: 18px 16px 14px;
+      color: #e8eef2;
+      border: 1px solid #8395a251;
+      border-left: 3px solid var(--accent);
+      background: #18222df2;
+      box-shadow: 0 14px 44px #07121dbb;
+      backdrop-filter: blur(18px);
+    }
+    .menu-heading { margin: 0 0 2px; font-size: 20px; font-weight: 500; }
+    .menu-caption { margin: 0 0 15px; color: #9dacb8; font-size: 12px; }
+    .menu-search { width: 100%; height: 34px; padding: 0 10px; border: 1px solid #586874; background: #101922; color: #eef4f7; }
+    .menu-section { margin: 16px 0 6px; color: #a9b9c3; font-size: 10px; font-weight: 700; letter-spacing: .06em; }
+    .menu-item { width: 100%; min-height: 42px; padding: 5px 8px; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; text-align: left; cursor: inherit; }
+    .menu-item:hover { background: #ffffff13; }
+    .menu-item .file-icon { width: 27px; height: 27px; }
+    .settings-window {
+      position: absolute;
+      z-index: 3;
+      top: 50%;
+      left: 50%;
+      width: min(760px, calc(100vw - 28px));
+      height: min(490px, calc(100dvh - 86px));
+      min-height: 340px;
+      transform: translate(-50%, -50%);
+      display: grid;
+      grid-template-rows: 38px 1fr;
+      overflow: hidden;
+      color: #27343e;
+      border: 1px solid #9aaab3;
+      background: #f1f3f5;
+      box-shadow: 0 22px 70px #07121da8;
+      animation: arrive .16s ease-out;
+    }
+    @keyframes arrive { from { opacity: 0; transform: translate(-50%, -48%); } to { opacity: 1; transform: translate(-50%, -50%); } }
+    .window-titlebar { display: flex; align-items: center; padding-left: 14px; border-bottom: 1px solid #d0d7dc; background: #fafbfc; font-size: 12px; }
+    .window-close { width: 44px; height: 37px; margin-left: auto; border: 0; color: #4c5b64; background: transparent; font-size: 18px; cursor: inherit; }
+    .window-close:hover { color: white; background: #c84b50; }
+    .settings-layout { min-height: 0; display: grid; grid-template-columns: 176px 1fr; }
+    .settings-nav { padding: 20px 10px; background: #e7ebef; border-right: 1px solid #d4dce1; }
+    .settings-nav h2 { margin: 0 8px 13px; font-size: 18px; font-weight: 550; }
+    .category-button { width: 100%; min-height: 38px; padding: 0 9px; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; color: #35434c; text-align: left; cursor: inherit; }
+    .category-button[aria-selected="true"] { background: #d2e4f0; box-shadow: inset 3px 0 var(--accent); }
+    .category-button:hover { background: #dbe2e7; }
+    .category-symbol { width: 17px; height: 17px; display: inline-flex; flex: 0 0 17px; }
+    .category-symbol svg { width: 17px; height: 17px; }
+    .settings-content { padding: 28px 32px; overflow: auto; }
+    .settings-content h3 { margin: 0 0 5px; font-size: 21px; font-weight: 550; }
+    .settings-desc { margin: 0 0 26px; color: #64727b; font-size: 13px; }
+    .setting-row { min-height: 64px; display: grid; grid-template-columns: minmax(120px, 1fr) minmax(170px, 1.2fr); align-items: center; gap: 18px; border-bottom: 1px solid #d8dfe3; font-size: 13px; }
+    .setting-value { color: #596974; }
+    .swatches { display: flex; align-items: center; gap: 9px; }
+    .swatch { width: 25px; height: 25px; border: 2px solid #f1f3f5; outline: 1px solid #9ba8b0; cursor: inherit; }
+    .swatch[aria-pressed="true"] { outline: 2px solid #3c6a86; }
+    input[type="range"] { width: 100%; accent-color: var(--accent); cursor: inherit; }
+    .size-options { display: flex; gap: 6px; }
+    .size-button { min-width: 62px; height: 30px; border: 1px solid #aeb9c0; background: #e2e7ea; color: #3a4851; cursor: inherit; }
+    .size-button[aria-pressed="true"] { border-color: #668ba3; background: #d2e4f0; }
+    .cursor-sample { position: relative; width: 42px; height: 42px; background: #193750; cursor: url("../mosWM/assets/posy.cur") 0 0, default; }
+    .cursor-sample::after { position: absolute; content: ""; left: 8px; top: 5px; width: 24px; height: 31px; background: var(--cursor-fill); clip-path: polygon(0 0, 0 100%, 29% 77%, 47% 100%, 61% 94%, 43% 70%, 76% 68%); transform: scale(var(--scale)); transform-origin: top left; filter: drop-shadow(1px 1px 1px #000); }
+    .preview-note { position: absolute; right: 10px; top: 8px; color: #d2dce2; font-size: 10px; opacity: .75; }
+    [hidden] { display: none !important; }
+    @media (max-width: 560px) {
+      .icon-grid { top: 14px; left: 10px; grid-template-rows: repeat(7, 72px); grid-auto-columns: 77px; gap: 2px 0; }
+      .desktop-item { width: 74px; min-height: 68px; }
+      .file-icon { width: 36px; height: 36px; }
+      .desktop-item span { font-size: 11px; }
+      .settings-layout { grid-template-columns: 116px 1fr; }
+      .settings-nav { padding: 15px 6px; }
+      .settings-nav h2 { margin: 0 5px 11px; font-size: 15px; }
+      .category-button { padding: 0 5px; font-size: 12px; gap: 5px; }
+      .settings-content { padding: 22px 15px; }
+      .setting-row { grid-template-columns: 1fr; gap: 4px; padding: 12px 0; }
+      .settings-window { height: min(490px, calc(100dvh - 68px)); }
+      .tray { gap: 8px; padding: 0 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="desktop" aria-label="MOSdesk desktop preview">
+    <div class="preview-note">INTERACTIVE PREVIEW</div>
+    <section class="icon-grid" aria-label="Desktop files">
+      <button class="desktop-item" data-file="folder" aria-label="Home folder"><svg class="file-icon"><use href="icons/file-icons.svg#folder"/></svg><span>Home</span></button>
+      <button class="desktop-item" data-file="drive" aria-label="System drive"><svg class="file-icon"><use href="icons/file-icons.svg#drive"/></svg><span>System</span></button>
+      <button class="desktop-item"><svg class="file-icon"><use href="icons/file-icons.svg#document"/></svg><span>Notes.txt</span></button>
+      <button class="desktop-item"><svg class="file-icon"><use href="icons/file-icons.svg#image"/></svg><span>Wallpaper.png</span></button>
+      <button class="desktop-item"><svg class="file-icon"><use href="icons/file-icons.svg#code"/></svg><span>main.c</span></button>
+      <button class="desktop-item"><svg class="file-icon"><use href="icons/file-icons.svg#archive"/></svg><span>Backup.zip</span></button>
+    </section>
+
+    <section class="start-menu" id="start-menu" hidden aria-label="Start menu">
+      <h2 class="menu-heading">MOSdesk</h2>
+      <p class="menu-caption">Applications and system tools</p>
+      <input class="menu-search" type="search" placeholder="Search applications" aria-label="Search applications">
+      <p class="menu-section">PINNED</p>
+      <button class="menu-item" id="open-settings"><svg class="file-icon"><use href="icons/file-icons.svg#settings"/></svg><span>MOSdesk Settings</span></button>
+      <button class="menu-item"><svg class="file-icon"><use href="icons/file-icons.svg#network"/></svg><span>Network</span></button>
+      <p class="menu-section">OPEN WINDOWS</p>
+      <div id="window-list" class="menu-caption">No open windows</div>
+    </section>
+
+    <section class="settings-window" id="settings-window" hidden aria-label="MOSdesk Settings window">
+      <div class="window-titlebar"><span>MOSdesk Settings</span><button class="window-close" id="close-settings" aria-label="Close settings">×</button></div>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="Settings categories">
+          <h2>Settings</h2>
+          <button class="category-button" data-category="appearance" aria-selected="true"><span class="category-symbol"><svg><use href="icons/file-icons.svg#palette"/></svg></span>Appearance</button>
+          <button class="category-button" data-category="mouse" aria-selected="false"><span class="category-symbol"><svg><use href="icons/file-icons.svg#pointer"/></svg></span>Mouse</button>
+          <button class="category-button" data-category="cursor" aria-selected="false"><span class="category-symbol"><svg><use href="icons/file-icons.svg#pointer"/></svg></span>Cursor</button>
+        </nav>
+        <div class="settings-content">
+          <section data-panel="appearance">
+            <h3>Appearance</h3><p class="settings-desc">Personalize the desktop colors.</p>
+            <div class="setting-row"><span>Desktop accent</span><div class="swatches">
+              <button class="swatch" style="background:#55a8dc" data-accent="#55a8dc" aria-label="Blue accent" aria-pressed="true"></button>
+              <button class="swatch" style="background:#48b8a5" data-accent="#48b8a5" aria-label="Teal accent" aria-pressed="false"></button>
+              <button class="swatch" style="background:#d28c54" data-accent="#d28c54" aria-label="Copper accent" aria-pressed="false"></button>
+            </div></div>
+            <div class="setting-row"><span>Wallpaper</span><span class="setting-value">Blue glass</span></div>
+          </section>
+          <section data-panel="mouse" hidden>
+            <h3>Mouse</h3><p class="settings-desc">Adjust pointer movement speed.</p>
+            <div class="setting-row"><label for="speed">Pointer speed</label><input id="speed" type="range" min="50" max="200" value="100"><span class="setting-value" id="speed-value">100%</span></div>
+          </section>
+          <section data-panel="cursor" hidden>
+            <h3>Cursor</h3><p class="settings-desc">Set the default pointer appearance.</p>
+            <div class="setting-row"><span>Preview</span><div class="cursor-sample" aria-label="Posy cursor preview"></div></div>
+            <div class="setting-row"><span>Cursor fill</span><div class="swatches">
+              <button class="swatch" style="background:#fff" data-cursor="#ffffff" aria-label="White cursor" aria-pressed="true"></button>
+              <button class="swatch" style="background:#ffe4a6" data-cursor="#ffe4a6" aria-label="Warm cursor" aria-pressed="false"></button>
+              <button class="swatch" style="background:#8ec5ff" data-cursor="#8ec5ff" aria-label="Blue cursor" aria-pressed="false"></button>
+              <button class="swatch" style="background:#55d6be" data-cursor="#55d6be" aria-label="Mint cursor" aria-pressed="false"></button>
+            </div></div>
+            <div class="setting-row"><span>Size</span><div class="size-options"><button class="size-button" data-size="1" aria-pressed="true">100%</button><button class="size-button" data-size="2" aria-pressed="false">200%</button></div></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <footer class="taskbar">
+      <button class="start-button" id="start-button" aria-label="Open Start menu" aria-expanded="false"><img class="start-logo" src="icons/minimal-os-logo.png" alt=""></button>
+      <div class="task-apps"><button class="task-app" aria-label="File manager"><svg class="file-icon"><use href="icons/file-icons.svg#folder"/></svg></button><button class="task-app" aria-label="MOSdesk Settings" id="settings-task"><svg class="file-icon"><use href="icons/file-icons.svg#settings"/></svg></button></div>
+      <div class="tray"><span class="tray-network" aria-label="Network connected"></span><span>ENG</span><span class="tray-clock" id="clock"></span></div>
+    </footer>
+  </main>
+  <script>
+    const startButton = document.querySelector("#start-button");
+    const startMenu = document.querySelector("#start-menu");
+    const settingsWindow = document.querySelector("#settings-window");
+
+    function showSettings(category = "appearance") {
+      settingsWindow.hidden = false;
+      startMenu.hidden = true;
+      startButton.setAttribute("aria-expanded", "false");
+      selectCategory(category);
+    }
+
+    function selectCategory(category) {
+      document.querySelectorAll(".category-button").forEach(button => {
+        button.setAttribute("aria-selected", String(button.dataset.category === category));
+      });
+      document.querySelectorAll("[data-panel]").forEach(panel => {
+        panel.hidden = panel.dataset.panel !== category;
+      });
+    }
+
+    startButton.addEventListener("click", () => {
+      startMenu.hidden = !startMenu.hidden;
+      startButton.setAttribute("aria-expanded", String(!startMenu.hidden));
+      settingsWindow.hidden = true;
+    });
+    document.querySelector("#open-settings").addEventListener("click", () => showSettings());
+    document.querySelector("#settings-task").addEventListener("click", () => showSettings());
+    document.querySelector("#close-settings").addEventListener("click", () => { settingsWindow.hidden = true; });
+    document.querySelectorAll(".category-button").forEach(button => {
+      button.addEventListener("click", () => selectCategory(button.dataset.category));
+    });
+    document.querySelectorAll("[data-accent]").forEach(button => {
+      button.addEventListener("click", () => {
+        document.documentElement.style.setProperty("--accent", button.dataset.accent);
+        document.querySelectorAll("[data-accent]").forEach(swatch => swatch.setAttribute("aria-pressed", String(swatch === button)));
+      });
+    });
+    document.querySelectorAll("[data-cursor]").forEach(button => {
+      button.addEventListener("click", () => {
+        document.documentElement.style.setProperty("--cursor-fill", button.dataset.cursor);
+        document.querySelectorAll("[data-cursor]").forEach(swatch => swatch.setAttribute("aria-pressed", String(swatch === button)));
+      });
+    });
+    document.querySelectorAll("[data-size]").forEach(button => {
+      button.addEventListener("click", () => {
+        document.documentElement.style.setProperty("--scale", button.dataset.size);
+        document.querySelectorAll("[data-size]").forEach(option => option.setAttribute("aria-pressed", String(option === button)));
+      });
+    });
+    document.querySelector("#speed").addEventListener("input", event => {
+      document.querySelector("#speed-value").textContent = `${event.target.value}%`;
+      document.documentElement.style.setProperty("--pointer-speed", `${event.target.value}%`);
+    });
+    document.querySelectorAll(".desktop-item").forEach(item => {
+      item.addEventListener("dblclick", () => {
+        if (item.dataset.file === "folder") showSettings("appearance");
+        else if (item.dataset.file === "drive") showSettings("mouse");
+      });
+    });
+    function updateClock() {
+      document.querySelector("#clock").textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" }).format(new Date());
+    }
+    updateClock();
+    setInterval(updateClock, 30000);
+  </script>
+</body>
+</html>
