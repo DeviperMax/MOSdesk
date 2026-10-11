@@ -26,9 +26,19 @@ mkdir -p "$DIST" "$PACKAGE"
     "$SCRIPT_DIR/libraries/ttrend_outline"
 
 mkdir -p "$SCRIPT_DIR/fonts" "$PACKAGE/fonts"
-python3 "$SCRIPT_DIR/tools/generate_font.py" "$SCRIPT_DIR/fonts/arial.font" "$PROJECT_ROOT/Open_Sans.zip"
-python3 "$SCRIPT_DIR/tools/generate_font.py" "$SCRIPT_DIR/fonts/roboto.font" "$PROJECT_ROOT/Open_Sans.zip"
-python3 "$SCRIPT_DIR/tools/generate_font.py" "$SCRIPT_DIR/fonts/default.font" "$PROJECT_ROOT/Open_Sans.zip"
+if [ -f "$PROJECT_ROOT/Open_Sans.zip" ]; then
+    python3 "$SCRIPT_DIR/tools/generate_font.py" "$SCRIPT_DIR/fonts/arial.font" "$PROJECT_ROOT/Open_Sans.zip"
+    python3 "$SCRIPT_DIR/tools/generate_font.py" "$SCRIPT_DIR/fonts/roboto.font" "$PROJECT_ROOT/Open_Sans.zip"
+    python3 "$SCRIPT_DIR/tools/generate_font.py" "$SCRIPT_DIR/fonts/default.font" "$PROJECT_ROOT/Open_Sans.zip"
+else
+    for font in arial roboto default; do
+        if [ ! -s "$SCRIPT_DIR/fonts/$font.font" ]; then
+            echo "MOSdesk: missing $font.font and Open_Sans.zip; cannot build fonts." >&2
+            exit 1
+        fi
+    done
+    printf 'Using bundled TTREND fonts (Open_Sans.zip not present).\n'
+fi
 cp "$SCRIPT_DIR/fonts/arial.font" "$PACKAGE/fonts/arial.font"
 cp "$SCRIPT_DIR/fonts/roboto.font" "$PACKAGE/fonts/roboto.font"
 cp "$SCRIPT_DIR/fonts/default.font" "$PACKAGE/fonts/default.font"
@@ -37,6 +47,8 @@ cp "$DIST/ttrend_raster.slib" "$PACKAGE/ttrend_raster.slib"
 cp "$DIST/ttrend_outline.slib" "$PACKAGE/ttrend_outline.slib"
 cp "$SCRIPT_DIR/mosdesk.pkg" "$PACKAGE/mosdesk.pkg"
 python3 "$PACKAGE_TOOL" "$PACKAGE" "$DIST/mosdesk.mpkg"
+"$PROJECT_ROOT/mosWM/build.sh"
 
 printf 'MOSdesk deliver package: %s\n' "$DIST/mosdesk.mpkg"
 printf 'Package directory:       %s\n' "$PACKAGE"
+printf 'Desktop package:         %s\n' "$PROJECT_ROOT/mosWM/dist/mosWM.mpkg"

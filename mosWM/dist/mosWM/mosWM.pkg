@@ -1,0 +1,10 @@
+[Info]
+name=mosWM
+version=0.1.0
+description=Window manager for Minimal-OS
+arch=x86_64
+operatingsystem=MINIMALOS
+
+[Install.minimalos]
+copy=programs/mosWM/mosWM.run,programs/mosWM/assets/posy.cur,programs/mosWM/assets/NOTICE.txt,services/mosWM.service
+target=0:/

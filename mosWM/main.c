@@ -73,11 +73,6 @@ static char status_message[64];
 static bool screen_owned;
 static uint32_t settings_poll_frames;
 
-extern long mos_open(const char* path, long flags);
-extern long mos_read(long fd, void* buffer, size_t length);
-extern long mos_close(long fd);
-extern long mos_size(long fd);
-
 static void* wm_malloc(size_t size) {
     uint64_t result = mos_syscall3(SYS_HEAP, SYS_HEAP_ALLOC, 0, size);
     int64_t signed_result = (int64_t)result;
@@ -109,25 +104,29 @@ static uint32_t read_u32le(const uint8_t* bytes) {
 }
 
 static bool load_cursor(void) {
-    long fd = mos_open("0:/programs/mosWM/assets/posy.cur", 0);
+    const char* cursor_path = "0:/programs/mosWM/assets/posy.cur";
+    long fd = (long)mos_syscall3(SYS_OPEN,
+        (uint64_t)(uintptr_t)cursor_path, SYS_O_RDONLY, 0);
     if (fd < 0) return false;
-    long file_size = mos_size(fd);
+    long file_size = (long)mos_syscall3(SYS_SIZE, (uint64_t)fd, 0, 0);
     if (file_size < 22 || file_size > 1024 * 1024) {
-        mos_close(fd);
+        mos_syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
         return false;
     }
     uint8_t* data = (uint8_t*)wm_malloc((size_t)file_size);
     if (!data) {
-        mos_close(fd);
+        mos_syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
         return false;
     }
     size_t total = 0;
     while (total < (size_t)file_size) {
-        long got = mos_read(fd, data + total, (size_t)file_size - total);
+        long got = (long)mos_syscall3(SYS_READ, (uint64_t)fd,
+            (uint64_t)(uintptr_t)(data + total),
+            (uint64_t)((size_t)file_size - total));
         if (got <= 0) break;
         total += (size_t)got;
     }
-    mos_close(fd);
+    mos_syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
     if (total != (size_t)file_size || read_u16le(data) != 0u ||
         read_u16le(data + 2) != 2u) {
         wm_free(data);

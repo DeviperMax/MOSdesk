@@ -1,0 +1,7 @@
+[GENERAL]
+name="mosWM"
+desc="MOSdesk graphical desktop and window manager"
+exit=None
+
+[STARTUP]
+exec="0:/programs/mosWM/mosWM.run"

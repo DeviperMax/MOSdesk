@@ -42,7 +42,9 @@ From the repository root:
 ./mosdesk/build.sh
 ```
 
-The build script creates the MOSdesk Settings window client and exported text-rendering libraries, then packages them under `mosdesk/dist/`.
+The build creates the MOSdesk Settings window client, exported text-rendering
+libraries, and the required mosWM desktop shell. It produces
+`mosdesk/dist/mosdesk.mpkg` and `mosWM/dist/mosWM.mpkg`.
 
 ## Preview MOSdesk
 
