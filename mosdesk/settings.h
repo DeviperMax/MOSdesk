@@ -29,7 +29,7 @@ typedef struct {
 
 static inline mosdesk_settings_t mosdesk_settings_default(void) {
     return (mosdesk_settings_t){
-        MOSDESK_SETTINGS_MAGIC, 100u, 0xFF59A6D8u, 0xFFFFFFFFu, 1u
+        MOSDESK_SETTINGS_MAGIC, 100u, 0xFF3DAEE9u, 0xFFFFFFFFu, 1u
     };
 }
 
