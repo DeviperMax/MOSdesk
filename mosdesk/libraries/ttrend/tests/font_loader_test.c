@@ -12,7 +12,7 @@ static void write_u32(uint8_t* dst, uint32_t value) {
     dst[3] = (uint8_t)((value >> 24) & 0xFFu);
 }
 
-int main(void) {
+int main(int argc, char** argv) {
     uint8_t font_bytes[32 + 128u * 7u];
     memset(font_bytes, 0, sizeof(font_bytes));
     memcpy(font_bytes, "TTRENDF", 7);
@@ -54,6 +54,41 @@ int main(void) {
     if (buffer[5u * 32u + 4u] != 0xFFFFFFFFu) {
         fprintf(stderr, "glyph not rendered at expected location\n");
         return 4;
+    }
+
+    /* Optional: pass an .otf/.ttf path to exercise the smooth-text path. */
+    if (argc > 1) {
+        ttrend_font_t vf = {0};
+        if (ttrend_font_load_path(&vf, argv[1], 16u) != 0 ||
+            !ttrend_font_is_vector(&vf)) {
+            fprintf(stderr, "vector font load failed\n");
+            return 5;
+        }
+        if (ttrend_text_width("Settings", &vf) < 20u ||
+            ttrend_text_height("Settings", &vf) < 12u) {
+            fprintf(stderr, "vector metrics wrong\n");
+            return 6;
+        }
+        uint32_t vbuf[96 * 32];
+        for (size_t i = 0; i < 96u * 32u; i++) vbuf[i] = 0xFFFFFFFFu;
+        ttrend_surface_t vs = {vbuf, 96u, 32u, 96u};
+        ttrend_draw_text(&vs, 4, 4, "Settings", 0xFF000000u, &vf);
+        int partial = 0;
+        for (size_t i = 0; i < 96u * 32u; i++) {
+            uint32_t g = vbuf[i] & 255u;
+            if (g != 0u && g != 255u) partial++;
+        }
+        if (partial < 20) {
+            fprintf(stderr, "vector text is not anti-aliased\n");
+            return 7;
+        }
+        /* y is the top of capitals: round letters may overshoot by <1px, no more */
+        for (size_t i = 0; i < 3u * 96u; i++)
+            if (vbuf[i] != 0xFFFFFFFFu) {
+                fprintf(stderr, "vector text painted above cap line\n");
+                return 8;
+            }
+        ttrend_font_destroy(&vf);
     }
     printf("font-loader-test passed\n");
     return 0;

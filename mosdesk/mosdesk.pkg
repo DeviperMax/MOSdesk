@@ -6,5 +6,5 @@ arch=x86_64
 operatingsystem=MINIMALOS
 
 [Install.minimalos]
-copy=mosdesk.run,ttrend_raster.slib,ttrend_outline.slib,fonts/arial.font,fonts/roboto.font,fonts/default.font
+copy=mosdesk.run,ttrend_raster.slib,ttrend_outline.slib,fonts/arial.font,fonts/roboto.font,fonts/default.font,fonts/Inter-Regular.otf,fonts/Inter-Medium.otf,fonts/Inter-LICENSE.txt
 target=0:/programs/mosdesk

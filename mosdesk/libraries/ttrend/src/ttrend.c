@@ -30,6 +30,12 @@ extern long mos_close(long fd);
 extern long mos_size(long fd);
 #endif
 
+/* Smooth OpenType/TrueType rendering lives in ttrend_outline. It is compiled
+ * into this unit with internal linkage so ttrend needs no extra object. */
+#define TTREND_OUTLINE_STATIC
+#define TTREND_OUTLINE_NO_FILE
+#include "../../ttrend_outline/src/ttrend_outline.c"
+
 #define TTREND_MAGIC "TTRENDF"
 #define TTREND_HEADER_SIZE 32u
 
@@ -76,8 +82,26 @@ static uint32_t read_u32le(const uint8_t* ptr) {
            ((uint32_t)ptr[2] << 16u) | ((uint32_t)ptr[3] << 24u);
 }
 
+int ttrend_font_is_vector(const ttrend_font_t* font) {
+    return font && font->vector != NULL;
+}
+
+/* Outline-font view of `font` at its current style (cheap struct copy, so
+ * copies of a ttrend_font_t can each use their own pixel_size). */
+static ttrend_outline_font_t vector_view(const ttrend_font_t* font) {
+    ttrend_outline_font_t v = *(const ttrend_outline_font_t*)font->vector;
+    v.pixel_size = font->pixel_size ? font->pixel_size : 12u;
+    v.tracking = font->tracking;
+    v.italic = font->italic;
+    return v;
+}
+
 int ttrend_font_destroy(ttrend_font_t* font) {
     if (!font) return 0;
+    if (font->vector) {
+        free(font->vector);
+        font->vector = NULL;
+    }
     if (font->owned_data) {
         free(font->owned_data);
         font->owned_data = NULL;
@@ -130,7 +154,34 @@ int ttrend_font_load_memory(ttrend_font_t* font, const void* data,
         font->owned_data = NULL;
         font->owned_size = 0u;
     }
+    if (font->vector) {
+        free(font->vector);
+        font->vector = NULL;
+    }
     memset(font, 0, sizeof(*font));
+
+    if (ttrend_outline_is_sfnt(data, length)) {
+        ttrend_outline_font_t* vec =
+            (ttrend_outline_font_t*)malloc(sizeof(*vec));
+        if (!vec) return -1;
+        if (ttrend_outline_font_load_memory(vec, data, length,
+                                            pixel_size ? pixel_size : 12u)
+            != 0) {
+            free(vec);
+            return -1;
+        }
+        font->vector = vec;
+        font->scale = 1u;
+        font->pixel_size = vec->pixel_size;
+        font->data = (const uint8_t*)data;
+        font->data_length = length;
+        font->units_per_em = vec->units_per_em;
+        font->glyph_count = vec->glyph_count;
+        font->ascent = vec->ascent;
+        font->descent = vec->descent;
+        font->line_gap = vec->line_gap;
+        return 0;
+    }
     font->scale = pixel_size ? pixel_size : 1u;
     font->tracking = 0u;
     font->bold = 0u;
@@ -223,6 +274,10 @@ int ttrend_font_load_path(ttrend_font_t* font, const char* path,
 
 uint32_t ttrend_text_width(const char* text, const ttrend_font_t* font) {
     if (!text) return 0u;
+    if (font && font->vector) {
+        ttrend_outline_font_t v = vector_view(font);
+        return ttrend_outline_text_width(text, &v);
+    }
     uint32_t scale = font_scale(font);
     uint32_t tracking = font ? font->tracking : 0u;
     uint32_t max_width = 0u;
@@ -254,6 +309,10 @@ uint32_t ttrend_text_width(const char* text, const ttrend_font_t* font) {
 
 uint32_t ttrend_text_height(const char* text, const ttrend_font_t* font) {
     if (!text || !*text) return 0u;
+    if (font && font->vector) {
+        ttrend_outline_font_t v = vector_view(font);
+        return ttrend_outline_text_height(text, &v);
+    }
     uint32_t scale = font_scale(font);
     uint32_t lines = 1u;
     uint32_t height = font_has_custom_data(font) ?
@@ -266,6 +325,16 @@ void ttrend_draw_text(ttrend_surface_t* surface, int32_t x, int32_t y,
                       const char* text, uint32_t color,
                       const ttrend_font_t* font) {
     if (!surface || !surface->pixels || !text || !surface->stride) return;
+
+    if (font && font->vector) {
+        ttrend_outline_font_t v = vector_view(font);
+        ttrend_outline_surface_t target = {surface->pixels, surface->width,
+                                           surface->height, surface->stride};
+        /* y is the top of capital letters, matching the bitmap fonts. */
+        ttrend_outline_draw_text_baseline(&target, x,
+            y + ttrend_outline_cap_height(&v), text, color, &v);
+        return;
+    }
 
     if (font_has_custom_data(font)) {
         uint32_t scale = font_scale(font);

@@ -29,6 +29,11 @@ typedef struct {
     int32_t loca_format;
     void* owned_data;
     size_t owned_size;
+    /* Non-NULL when the font is an OpenType/TrueType file: text is then drawn
+     * smooth (anti-aliased) by the ttrend_outline engine and `pixel_size` is
+     * the em size in pixels (e.g. 12, 16). `tracking` and `italic` still
+     * apply; `scale` and `bold` are bitmap-only (load a bold face instead). */
+    void* vector;
 } ttrend_font_t;
 
 typedef struct {
@@ -38,9 +43,16 @@ typedef struct {
     uint32_t stride;
 } ttrend_surface_t;
 
-/* The font data remains owned by the caller and must stay alive while used,
+/* Fonts: ttrend_font_load_*() accepts the legacy bitmap "TTRENDF" format and
+ * .otf/.ttf outline fonts (CFF or glyf). For outline fonts ttrend_draw_text()
+ * treats y as the top of capital letters, like the bitmap fonts, so a layout
+ * made for one keeps working with the other. Check ttrend_font_is_vector()
+ * to see which one was loaded.
+ *
+ * The font data remains owned by the caller and must stay alive while used,
  * unless it was loaded from a path via ttrend_font_load_file(). */
 int ttrend_font_destroy(ttrend_font_t* font);
+int ttrend_font_is_vector(const ttrend_font_t* font);
 int ttrend_font_load_memory(ttrend_font_t* font, const void* data,
                             size_t length, uint32_t pixel_size);
 int ttrend_font_load_file(ttrend_font_t* font, const char* path,

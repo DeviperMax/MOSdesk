@@ -7,7 +7,7 @@ The project is split into a desktop implementation, the Minimal-OS SDK toolchain
 ## Features
 
 - Composites desktop layers and window surfaces with dirty-rectangle updates
-- Uses the reusable `ttrend` bitmap text renderer for UI text output
+- Renders smooth, anti-aliased OpenType/TrueType text (Inter, bundled) through the reusable `ttrend` / `ttrend_outline` libraries, with the bitmap font as a fallback
 - Produces SDK `.slib` bundles that can be consumed by other freestanding programs
 - Packages the desktop as a Minimal-OS deliver package (`.mpkg`) for installation
 
@@ -95,11 +95,31 @@ After a successful build, the following files are produced in `mosdesk/dist/`:
 
 - `mosdesk.run` — the desktop executable
 - `ttrend_raster.slib` — raster text renderer library bundle
-- `ttrend_outline.slib` — outline text renderer library bundle
+- `ttrend_outline.slib` — OpenType/TrueType (CFF and glyf) anti-aliased text renderer bundle
 - `mosdesk.mpkg` — deliver package for Minimal-OS installation
 - `mosdesk/` — unpacked package directory used to assemble the final package
 
 The `.slib` bundles are distribution artifacts for Minimal-OS. The runtime does not currently load shared libraries dynamically at runtime; instead, they are used as packaged SDK deliverables and metadata for other programs.
+
+## Smooth text
+
+`ttrend_outline` parses `.otf`/`.ttf` fonts in memory and rasterises glyphs with
+exact-area coverage in integer fixed point (no floating point, no libm, no
+malloc while drawing), 1/4-pixel glyph positioning and a small coverage cache.
+`ttrend_font_load_path()` now accepts outline fonts too; `ttrend_font_is_vector()`
+tells which kind was loaded. mosWM and MOSdesk Settings load `Inter-Regular.otf`
+and `Inter-Medium.otf` (Latin subsets, SIL OFL 1.1, see `Inter-LICENSE.txt`) and
+fall back to the bitmap font if the files are missing. Not implemented: hinting,
+kerning/GPOS, CID-keyed CFF and variable fonts.
+
+Host tests (no SDK needed):
+
+```sh
+cc -I mosdesk/libraries/ttrend_outline/include \
+   mosdesk/libraries/ttrend_outline/tests/outline_render_test.c \
+   mosdesk/libraries/ttrend_outline/src/ttrend_outline.c -o /tmp/outline_test
+/tmp/outline_test mosdesk/fonts/Inter-Regular.otf /tmp/preview.ppm
+```
 
 ## Notes
 

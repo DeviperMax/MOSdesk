@@ -9,10 +9,23 @@
  * alpha, could not be scaled, and was overwritten or mis-coloured when the
  * canvas was presented. This renderer draws into the canvas itself.
  *
- * Glyphs: public-domain 8x8 VGA font (Marcel Sondaar / IBM), bit 0 = left. */
+ * Two back-ends share one API:
+ *  - smooth: anti-aliased OpenType/TrueType text from ttrend_outline, used as
+ *    soon as moswm_text_load_fonts() has been given a usable font;
+ *  - bitmap: the public-domain 8x8 VGA font (Marcel Sondaar / IBM,
+ *    bit 0 = left), the fallback when the font files are missing.
+ * `scale` keeps its old meaning as a size class: 1 -> 12 px text in a box 8
+ * px tall, 2 -> 16 px text in a box 16 px tall (and so on, 8*scale px), so
+ * existing layouts do not move when the back-end changes. */
 
 #include <stddef.h>
 #include <stdint.h>
+
+/* The renderer is compiled into mosWM itself (internal linkage, no file
+ * loader): mosWM reads the font files with its own syscalls. */
+#define TTREND_OUTLINE_STATIC
+#define TTREND_OUTLINE_NO_FILE
+#include "../mosdesk/libraries/ttrend_outline/src/ttrend_outline.c"
 
 static const uint8_t moswm_font8x8[128][8] = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
@@ -145,19 +158,77 @@ static const uint8_t moswm_font8x8[128][8] = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 };
 
+/* Smooth-text state. Regular weight for small text, medium for size >= 2. */
+static ttrend_outline_font_t moswm_font_regular;
+static ttrend_outline_font_t moswm_font_medium;
+static int moswm_regular_ok;
+static int moswm_medium_ok;
+
+/* Both buffers must stay alive while text is drawn. Either may be NULL: a
+ * missing weight falls back to the other one, and none falls back to the
+ * bitmap font. Returns 1 if smooth text is available. */
+static int moswm_text_load_fonts(const void* regular, size_t regular_len,
+                                 const void* medium, size_t medium_len) {
+    moswm_regular_ok = regular &&
+        ttrend_outline_font_load_memory(&moswm_font_regular, regular,
+                                        regular_len, 12u) == 0;
+    moswm_medium_ok = medium &&
+        ttrend_outline_font_load_memory(&moswm_font_medium, medium,
+                                        medium_len, 16u) == 0;
+    return moswm_regular_ok || moswm_medium_ok;
+}
+
+static int moswm_text_is_smooth(void) {
+    return moswm_regular_ok || moswm_medium_ok;
+}
+
+static ttrend_outline_font_t* moswm_text_font(uint32_t scale) {
+    int want_medium = scale >= 2u;
+    ttrend_outline_font_t* f;
+    if (want_medium) f = moswm_medium_ok ? &moswm_font_medium : &moswm_font_regular;
+    else f = moswm_regular_ok ? &moswm_font_regular : &moswm_font_medium;
+    f->pixel_size = scale <= 1u ? 12u : 8u * scale;
+    return f;
+}
+
 static uint32_t moswm_text_width(const char* text, uint32_t scale) {
+    if (!text) return 0;
+    if (moswm_text_is_smooth())
+        return ttrend_outline_text_width(text, moswm_text_font(scale ? scale : 1u));
     uint32_t n = 0;
     while (text && *text++) n++;
     return n ? n * (8u * scale + scale) - scale : 0;
 }
 
+static void moswm_blend_pixel(uint32_t* d, uint32_t c) {
+    uint32_t a = c >> 24, inv = 255u - a;
+    if (a == 255u) { *d = c; return; }
+    uint32_t dr = (*d >> 16) & 255u, dg = (*d >> 8) & 255u, db = *d & 255u;
+    uint32_t r = (((c >> 16) & 255u) * a + dr * inv) / 255u;
+    uint32_t gg = (((c >> 8) & 255u) * a + dg * inv) / 255u;
+    uint32_t b = ((c & 255u) * a + db * inv) / 255u;
+    *d = 0xFF000000u | (r << 16) | (gg << 8) | b;
+}
+
 /* Draws `text` with its top-left corner at (x, y). `color` is 0xAARRGGBB and
- * is alpha-blended onto the canvas. Pass shadow != 0 for a 1*scale drop shadow
+ * is alpha-blended onto the canvas. Pass shadow != 0 for a drop shadow
  * (0xAARRGGBB) to keep text readable over the wallpaper. */
 static void moswm_draw_text(uint32_t* canvas, uint32_t cw, uint32_t ch,
                             int32_t x, int32_t y, const char* text,
                             uint32_t color, uint32_t shadow, uint32_t scale) {
     if (!canvas || !text || !scale) return;
+    if (moswm_text_is_smooth()) {
+        ttrend_outline_font_t* f = moswm_text_font(scale);
+        ttrend_outline_surface_t target = {canvas, cw, ch, cw};
+        /* Centre the font's ascent+descent in the 8*scale px tall box. */
+        int32_t asc = ttrend_outline_ascent(f), desc = ttrend_outline_descent(f);
+        int32_t baseline = y + ((int32_t)(8u * scale) - (asc + desc)) / 2 + asc;
+        if (shadow)
+            ttrend_outline_draw_text_baseline(&target, x + 1, baseline + 1,
+                                              text, shadow, f);
+        ttrend_outline_draw_text_baseline(&target, x, baseline, text, color, f);
+        return;
+    }
     for (int pass = shadow ? 0 : 1; pass < 2; pass++) {
         uint32_t c = pass ? color : shadow;
         int32_t ox = pass ? 0 : (int32_t)scale;
@@ -176,14 +247,7 @@ static void moswm_draw_text(uint32_t* canvas, uint32_t cw, uint32_t ch,
                         for (uint32_t sx = 0; sx < scale; sx++) {
                             int32_t px = pen + ox + (int32_t)(col * scale + sx);
                             if (px < 0 || (uint32_t)px >= cw) continue;
-                            uint32_t* d = canvas + (size_t)py * cw + (uint32_t)px;
-                            uint32_t a = c >> 24, inv = 255u - a;
-                            if (a == 255u) { *d = c; continue; }
-                            uint32_t dr = (*d >> 16) & 255u, dg = (*d >> 8) & 255u, db = *d & 255u;
-                            uint32_t r = (((c >> 16) & 255u) * a + dr * inv) / 255u;
-                            uint32_t gg = (((c >> 8) & 255u) * a + dg * inv) / 255u;
-                            uint32_t b = ((c & 255u) * a + db * inv) / 255u;
-                            *d = 0xFF000000u | (r << 16) | (gg << 8) | b;
+                            moswm_blend_pixel(canvas + (size_t)py * cw + (uint32_t)px, c);
                         }
                     }
                 }

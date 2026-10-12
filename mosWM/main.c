@@ -200,6 +200,57 @@ static bool load_cursor(void) {
     return loaded;
 }
 
+/* Reads a whole file into a wm_malloc'd buffer (caller wm_free()s it). */
+static uint8_t* wm_read_file(const char* path, size_t max_size, size_t* size) {
+    long fd = (long)mos_syscall3(SYS_OPEN, (uint64_t)(uintptr_t)path,
+                                 SYS_O_RDONLY, 0);
+    if (fd < 0) return NULL;
+    long file_size = (long)mos_syscall3(SYS_SIZE, (uint64_t)fd, 0, 0);
+    if (file_size <= 0 || (size_t)file_size > max_size) {
+        mos_syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+        return NULL;
+    }
+    uint8_t* data = (uint8_t*)wm_malloc((size_t)file_size);
+    if (!data) {
+        mos_syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+        return NULL;
+    }
+    size_t total = 0;
+    while (total < (size_t)file_size) {
+        long got = (long)mos_syscall3(SYS_READ, (uint64_t)fd,
+            (uint64_t)(uintptr_t)(data + total),
+            (uint64_t)((size_t)file_size - total));
+        if (got <= 0) break;
+        total += (size_t)got;
+    }
+    mos_syscall3(SYS_CLOSE, (uint64_t)fd, 0, 0);
+    if (total != (size_t)file_size) {
+        wm_free(data);
+        return NULL;
+    }
+    *size = total;
+    return data;
+}
+
+static void log_message(const char* message);
+static uint8_t* font_regular_data;
+static uint8_t* font_medium_data;
+
+/* Smooth OpenType text; silently stays on the bitmap font if the files are
+ * missing or unusable. */
+static void load_fonts(void) {
+    size_t regular_size = 0, medium_size = 0;
+    font_regular_data = wm_read_file(
+        "0:/programs/mosWM/assets/fonts/Inter-Regular.otf",
+        2u * 1024u * 1024u, &regular_size);
+    font_medium_data = wm_read_file(
+        "0:/programs/mosWM/assets/fonts/Inter-Medium.otf",
+        2u * 1024u * 1024u, &medium_size);
+    if (!moswm_text_load_fonts(font_regular_data, regular_size,
+                               font_medium_data, medium_size))
+        log_message("mosWM: no outline fonts, using the bitmap font\n");
+}
+
 static void log_message(const char* message) {
     uint32_t length = 0;
     while (message[length]) length++;
@@ -301,6 +352,37 @@ static void fit_text(char* dst, size_t dst_size, const char* src,
     dst[max_chars - 2u] = '.';
     dst[max_chars - 1u] = '.';
     dst[max_chars] = '\0';
+}
+
+/* Like fit_text, but cuts to `max_px` pixels of rendered width (proportional
+ * smooth text is much narrower than the 9 px/char bitmap font). */
+static void fit_text_px(char* dst, size_t dst_size, const char* src,
+                        int32_t max_px, uint32_t scale) {
+    size_t len = 0;
+    while (src[len] && len + 1u < dst_size) {
+        dst[len] = src[len];
+        len++;
+    }
+    dst[len] = '\0';
+    if (max_px <= 0) {
+        dst[0] = '\0';
+        return;
+    }
+    if ((int32_t)moswm_text_width(dst, scale) <= max_px && !src[len]) return;
+    while (len > 0) {
+        /* never cut inside a UTF-8 sequence */
+        size_t cut = len - 1u;
+        while (cut > 0 && ((uint8_t)dst[cut] & 0xC0u) == 0x80u) cut--;
+        len = cut;
+        dst[len] = '\0';
+        if (len + 3u < dst_size) {
+            dst[len] = '.';
+            dst[len + 1u] = '.';
+            dst[len + 2u] = '\0';
+            if ((int32_t)moswm_text_width(dst, scale) <= max_px) return;
+            dst[len] = '\0';
+        }
+    }
 }
 
 static uint32_t isqrt_u64(uint64_t value) {
@@ -722,8 +804,7 @@ static void draw_chrome_text(const syscall_window_info_t* info) {
     /* Breeze-style centred title, dimmed when the window is not focused. */
     char title[SYSCALL_WINDOW_MAX_TITLE];
     int32_t room = (min_x - 10) - (x + 12);
-    uint32_t max_chars = room > 0 ? (uint32_t)room / 18u : 0u;
-    fit_text(title, sizeof(title), info->title, max_chars);
+    fit_text_px(title, sizeof(title), info->title, room, 2);
     int32_t text_width = (int32_t)moswm_text_width(title, 2);
     int32_t text_x = x + (outer_width - text_width) / 2;
     if (text_x + text_width > min_x - 10) text_x = min_x - 10 - text_width;
@@ -868,7 +949,7 @@ static void draw_taskbar(const syscall_window_info_t* windows,
             fill_rect(x + 78, top + 45, 20, 2,
                       minimized ? 0x50FFFFFFu : 0xA0FFFFFFu);
         char label[SYSCALL_WINDOW_MAX_TITLE];
-        fit_text(label, sizeof(label), info->title, 9);
+        fit_text_px(label, sizeof(label), info->title, 156, 2);
         wm_text(x + 10, top + 16, label,
                 minimized ? 0xFF8C9BA6u : 0xFFEAF2F8u, 0, 2);
         x += 180;
@@ -1284,6 +1365,10 @@ static void cleanup(void) {
     canvas = NULL;
     wm_free(wallpaper);
     wallpaper = NULL;
+    wm_free(font_regular_data);
+    font_regular_data = NULL;
+    wm_free(font_medium_data);
+    font_medium_data = NULL;
     for (uint32_t i = 0; i < MAX_WINDOWS; i++) {
         wm_free(cache[i].pixels);
         memset(&cache[i], 0, sizeof(cache[i]));
@@ -1330,6 +1415,7 @@ int main(void) {
     cursor_y = (int32_t)(display.height / 2u);
     load_desktop_settings();
     load_cursor();
+    load_fonts();
     syscall_window_info_t windows[MAX_WINDOWS];
     syscall_input_event_t input[32];
 

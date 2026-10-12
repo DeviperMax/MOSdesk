@@ -18,11 +18,12 @@ if [ ! -f "$PACKAGE_TOOL" ]; then
     exit 1
 fi
 
-mkdir -p "$DIST" "$PACKAGE/programs/mosWM/assets" "$PACKAGE/services"
+mkdir -p "$DIST" "$PACKAGE/programs/mosWM/assets/fonts" "$PACKAGE/services"
 "$SDK_BUILD" --output "$DIST/mosWM.run" "$SCRIPT_DIR"
 cp "$DIST/mosWM.run" "$PACKAGE/programs/mosWM/mosWM.run"
 cp "$SCRIPT_DIR/assets/posy.cur" "$PACKAGE/programs/mosWM/assets/posy.cur"
 cp "$SCRIPT_DIR/assets/NOTICE.txt" "$PACKAGE/programs/mosWM/assets/NOTICE.txt"
+cp "$SCRIPT_DIR/assets/fonts/"Inter-* "$PACKAGE/programs/mosWM/assets/fonts/"
 cp "$SCRIPT_DIR/mosWM.pkg" "$PACKAGE/mosWM.pkg"
 cp "$SCRIPT_DIR/mosWM.service" "$PACKAGE/services/mosWM.service"
 python3 "$PACKAGE_TOOL" "$PACKAGE" "$DIST/mosWM.mpkg"

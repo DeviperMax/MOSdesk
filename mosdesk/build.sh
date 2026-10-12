@@ -42,6 +42,9 @@ fi
 cp "$SCRIPT_DIR/fonts/arial.font" "$PACKAGE/fonts/arial.font"
 cp "$SCRIPT_DIR/fonts/roboto.font" "$PACKAGE/fonts/roboto.font"
 cp "$SCRIPT_DIR/fonts/default.font" "$PACKAGE/fonts/default.font"
+for font in Inter-Regular.otf Inter-Medium.otf Inter-LICENSE.txt; do
+    cp "$SCRIPT_DIR/fonts/$font" "$PACKAGE/fonts/$font"
+done
 cp "$DIST/mosdesk.run" "$PACKAGE/mosdesk.run"
 cp "$DIST/ttrend_raster.slib" "$PACKAGE/ttrend_raster.slib"
 cp "$DIST/ttrend_outline.slib" "$PACKAGE/ttrend_outline.slib"

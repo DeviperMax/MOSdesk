@@ -27,6 +27,7 @@ static uint32_t category;
 static ttrend_font_t small_font = {1, 1, 0, 0};
 static ttrend_font_t large_font = {2, 1, 1, 0};
 static ttrend_font_t loaded_font;
+static ttrend_font_t loaded_large_font;
 
 static const uint32_t cursor_colors[] = {
     0xFFFFFFFFu, 0xFFFFE4A6u, 0xFF8EC5FFu, 0xFF55D6BEu
@@ -77,13 +78,17 @@ static void draw_text(int32_t x, int32_t y, const char* text,
 
 static void draw_control_labels(void) {
     if (category == 0u) {
-        draw_text((int32_t)NAV_WIDTH + 22, 63, "DESKTOP ACCENT",
+        draw_text((int32_t)NAV_WIDTH + 22, 63, "Desktop accent",
                   0xFF34434Cu, true);
-        draw_text((int32_t)NAV_WIDTH + 22, 132,
-                  "BLUE     TEAL     COPPER", 0xFF667680u, false);
-        draw_text((int32_t)NAV_WIDTH + 22, 185, "WALLPAPER",
+        /* One label per swatch: proportional text cannot be aligned with
+         * runs of spaces the way the monospace bitmap font was. */
+        static const char* const accent_names[] = {"Blue", "Teal", "Copper"};
+        for (uint32_t i = 0; i < 3; i++)
+            draw_text((int32_t)NAV_WIDTH + 22 + (int32_t)i * 50, 132,
+                      accent_names[i], 0xFF667680u, false);
+        draw_text((int32_t)NAV_WIDTH + 22, 185, "Wallpaper",
                   0xFF34434Cu, true);
-        draw_text((int32_t)NAV_WIDTH + 22, 212, "BLUE GLASS",
+        draw_text((int32_t)NAV_WIDTH + 22, 201, "Blue glass",
                   0xFF667680u, false);
     } else if (category == 1u) {
         char speed[5];
@@ -100,16 +105,16 @@ static void draw_control_labels(void) {
         }
         speed[length] = '%';
         speed[length + 1u] = '\0';
-        draw_text((int32_t)NAV_WIDTH + 22, 63, "POINTER SPEED",
+        draw_text((int32_t)NAV_WIDTH + 22, 63, "Pointer speed",
                   0xFF34434Cu, true);
         draw_text((int32_t)NAV_WIDTH + 22, 129, speed,
                   0xFF667680u, false);
-        draw_text((int32_t)NAV_WIDTH + 22, 176, "DRAG TO ADJUST",
+        draw_text((int32_t)NAV_WIDTH + 22, 176, "Drag to adjust",
                   0xFF667680u, false);
     } else {
-        draw_text((int32_t)NAV_WIDTH + 22, 63, "CURSOR FILL",
+        draw_text((int32_t)NAV_WIDTH + 22, 63, "Cursor fill",
                   0xFF34434Cu, true);
-        draw_text((int32_t)NAV_WIDTH + 22, 159, "SIZE",
+        draw_text((int32_t)NAV_WIDTH + 22, 159, "Size",
                   0xFF34434Cu, true);
         draw_text((int32_t)NAV_WIDTH + 29, 201, "100%",
                   0xFF34434Cu, false);
@@ -132,16 +137,16 @@ static void draw_window(void) {
               (int32_t)surface.width - (int32_t)NAV_WIDTH - 28,
               1, 0xFFD2D9DEu);
 
-    draw_text(16, 15, "MOSDESK SETTINGS", 0xFF273640u, true);
+    draw_text(16, 15, "MOSdesk Settings", 0xFF273640u, true);
     moswm_draw_file_icon(surface.pixels, surface.width, surface.height,
                          20, 56, MOSWM_ICON_SETTINGS);
     moswm_draw_file_icon(surface.pixels, surface.width, surface.height,
                          20, 94, MOSWM_ICON_POINTER);
     moswm_draw_file_icon(surface.pixels, surface.width, surface.height,
                          20, 132, MOSWM_ICON_POINTER);
-    draw_text(54, 65, "APPEARANCE", 0xFF34434Cu, false);
-    draw_text(54, 103, "MOUSE", 0xFF34434Cu, false);
-    draw_text(54, 141, "CURSOR", 0xFF34434Cu, false);
+    draw_text(54, 65, "Appearance", 0xFF34434Cu, false);
+    draw_text(54, 103, "Mouse", 0xFF34434Cu, false);
+    draw_text(54, 141, "Cursor", 0xFF34434Cu, false);
 
     if (category == 0u) {
         for (uint32_t i = 0; i < 3; i++) {
@@ -227,9 +232,23 @@ static void close_requested(uint32_t id) {
     mos_exit(0);
 }
 
-int main(void) {
-    preferences = mosdesk_settings_load();
+static void load_fonts(void) {
+    /* Prefer smooth OpenType text (Inter); fall back to the bitmap font.
+     * For outline fonts ttrend_draw_text() puts y at the top of capitals, so
+     * the layout below is the same for both. */
     if (ttrend_font_load_path(&loaded_font,
+            "0:/programs/mosdesk/fonts/Inter-Regular.otf", 12u) == 0) {
+        small_font = loaded_font;
+        small_font.tracking = 0u;
+        if (ttrend_font_load_path(&loaded_large_font,
+                "0:/programs/mosdesk/fonts/Inter-Medium.otf", 16u) == 0) {
+            large_font = loaded_large_font;
+        } else {
+            large_font = loaded_font;
+            large_font.pixel_size = 16u;
+        }
+        large_font.tracking = 0u;
+    } else if (ttrend_font_load_path(&loaded_font,
             "0:/programs/mosdesk/fonts/default.font", 1u) == 0) {
         small_font = loaded_font;
         large_font = loaded_font;
@@ -238,6 +257,11 @@ int main(void) {
         large_font.tracking = 1u;
         large_font.bold = 1u;
     }
+}
+
+int main(void) {
+    preferences = mosdesk_settings_load();
+    load_fonts();
 
     window_id = mos_window_create(0, 72, 56, SETTINGS_WIDTH, SETTINGS_HEIGHT,
                                   "MOSdesk Settings");
