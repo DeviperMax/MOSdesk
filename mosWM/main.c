@@ -59,7 +59,7 @@ static uint32_t cursor_hotspot_y;
 static uint32_t cursor_fill_color = 0xFFFFFFFFu;
 static uint32_t cursor_scale = 1u;
 static uint32_t mouse_speed = 100u;
-static uint32_t accent_color = 0xFF59A6D8u;
+static uint32_t accent_color = 0xFF3DAEE9u;
 static uint32_t dragging_id;
 static uint32_t drag_mode;
 static uint32_t drag_start_x;
@@ -303,6 +303,22 @@ static void fit_text(char* dst, size_t dst_size, const char* src,
     dst[max_chars] = '\0';
 }
 
+static uint32_t isqrt_u64(uint64_t value) {
+    uint64_t result = 0, bit = 1ull << 62;
+    while (bit > value) bit >>= 2;
+    while (bit) {
+        if (value >= result + bit) {
+            value -= result + bit;
+            result = (result >> 1) + bit;
+        } else {
+            result >>= 1;
+        }
+        bit >>= 2;
+    }
+    return (uint32_t)result;
+}
+
+/* Each pixel is painted exactly once, so translucent colours stay even. */
 static void fill_rounded_rect(int32_t x, int32_t y, int32_t width,
                               int32_t height, uint32_t radius,
                               uint32_t color) {
@@ -314,47 +330,152 @@ static void fill_rounded_rect(int32_t x, int32_t y, int32_t width,
         return;
     }
     int32_t r = (int32_t)radius;
-    int32_t rr = r * r;
-    fill_rect(x + r, y, width - r * 2, height, color);
-    fill_rect(x, y + r, width, height - r * 2, color);
-    for (int32_t dy = -r; dy <= r; dy++) {
-        for (int32_t dx = -r; dx <= r; dx++) {
-            if (dx * dx + dy * dy > rr) continue;
-            put_pixel(x + r + dx, y + r + dy, color);
-            put_pixel(x + width - r - 1 + dx, y + r + dy, color);
-            put_pixel(x + r + dx, y + height - r - 1 + dy, color);
-            put_pixel(x + width - r - 1 + dx,
-                      y + height - r - 1 + dy, color);
+    for (int32_t row = 0; row < height; row++) {
+        int32_t inset = 0;
+        int32_t from_edge = row < r ? row : (row >= height - r ? height - 1 - row : r);
+        if (from_edge < r) {
+            int64_t dy2 = 2 * (int64_t)r - 2 * (int64_t)from_edge - 1;
+            int64_t span2 = 4 * (int64_t)r * r - dy2 * dy2;
+            inset = r - (int32_t)((isqrt_u64((uint64_t)span2) + 1u) / 2u);
+            if (inset < 0) inset = 0;
+        }
+        fill_rect(x + inset, y + row, width - inset * 2, 1, color);
+    }
+}
+
+static uint32_t* wallpaper;
+
+static uint32_t lerp_channel(uint32_t from, uint32_t to, uint32_t t) {
+    return (from * (255u - t) + to * t) / 255u;
+}
+
+/* Anti-aliased thick line with round caps, written as max-coverage into an
+ * 8-bit mask so crossing strokes never double-darken where they meet.
+ * Coordinates are in mask space; half16 is half the stroke width in 1/16 px. */
+static void mask_thick_line(uint8_t* mask, int32_t mw, int32_t mh,
+                            int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            int32_t half16) {
+    int64_t dx = x1 - x0, dy = y1 - y0;
+    int64_t len2 = dx * dx + dy * dy;
+    if (!len2) return;
+    int32_t pad = half16 / 16 + 2;
+    int32_t min_x = (x0 < x1 ? x0 : x1) - pad, max_x = (x0 > x1 ? x0 : x1) + pad;
+    int32_t min_y = (y0 < y1 ? y0 : y1) - pad, max_y = (y0 > y1 ? y0 : y1) + pad;
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x >= mw) max_x = mw - 1;
+    if (max_y >= mh) max_y = mh - 1;
+    int64_t reach = (int64_t)(half16 / 16 + 2);
+    for (int32_t y = min_y; y <= max_y; y++) {
+        for (int32_t x = min_x; x <= max_x; x++) {
+            int64_t px = x - x0, py = y - y0;
+            int64_t t = px * dx + py * dy, d2;
+            if (t <= 0) {
+                d2 = px * px + py * py;
+            } else if (t >= len2) {
+                int64_t qx = x - x1, qy = y - y1;
+                d2 = qx * qx + qy * qy;
+            } else {
+                int64_t cross = px * dy - py * dx;
+                d2 = cross * cross / len2;
+            }
+            if (d2 > reach * reach) continue;
+            int32_t distance16 = (int32_t)isqrt_u64((uint64_t)d2 * 256u);
+            int32_t coverage = half16 + 8 - distance16;
+            if (coverage <= 0) continue;
+            if (coverage > 16) coverage = 16;
+            uint8_t value = (uint8_t)(coverage * 255 / 16);
+            uint8_t* cell = mask + (size_t)y * (uint32_t)mw + (uint32_t)x;
+            if (value > *cell) *cell = value;
         }
     }
 }
 
-static void draw_wallpaper(void) {
-    for (uint32_t y = 0; y < display.height; y++) {
-        for (uint32_t x = 0; x < display.width; x++) {
-            uint32_t red = 14u + x * 17u / display.width;
-            uint32_t green = 27u + y * 33u / display.height;
-            uint32_t blue = 48u + (x + y) * 45u /
-                                      (display.width + display.height);
-            canvas[(size_t)y * display.width + x] =
+/* The Minimal-OS hourglass: top bar, bottom bar, one long diagonal, and two
+ * short diagonals that stop just before the centre. Units follow the
+ * 370x353 logo artwork so every stroke meets its neighbours exactly. */
+static void draw_logo_mask(uint8_t* mask, int32_t mw, int32_t mh,
+                           int32_t pad, int32_t scale_num, int32_t scale_den,
+                           int32_t half16) {
+#define LX(v) (pad + (v) * scale_num / scale_den)
+    mask_thick_line(mask, mw, mh, LX(0), LX(0), LX(370), LX(0), half16);
+    mask_thick_line(mask, mw, mh, LX(0), LX(353), LX(370), LX(353), half16);
+    mask_thick_line(mask, mw, mh, LX(370), LX(0), LX(0), LX(353), half16);
+    mask_thick_line(mask, mw, mh, LX(0), LX(0), LX(167), LX(155), half16);
+    mask_thick_line(mask, mw, mh, LX(370), LX(353), LX(203), LX(197), half16);
+#undef LX
+}
+
+static void paint_wallpaper(uint32_t* target) {
+    uint32_t* saved = canvas;
+    canvas = target;
+    uint32_t w = display.width, h = display.height;
+
+    /* Deep-blue diagonal gradient with Plasma-style angled light bands. */
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            uint32_t t = (x * 255u / w + y * 255u / h) / 2u;
+            uint32_t red, green, blue;
+            if (t < 140u) {
+                uint32_t k = t * 255u / 140u;
+                red = lerp_channel(9, 19, k);
+                green = lerp_channel(20, 52, k);
+                blue = lerp_channel(38, 92, k);
+            } else {
+                uint32_t k = (t - 140u) * 255u / 115u;
+                red = lerp_channel(19, 31, k);
+                green = lerp_channel(52, 104, k);
+                blue = lerp_channel(92, 158, k);
+            }
+            uint32_t nx = x * 1000u / w, ny = y * 1000u / h;
+            uint32_t band = 2u * nx + ny;
+            uint32_t lift = 0;
+            if (band > 1350u && band < 2150u && ny > 140u) lift += 7;
+            if (band > 1800u && band < 2600u) lift += 6;
+            if (band > 2250u && band < 2750u && ny < 900u) lift += 5;
+            red += lift; green += lift * 2u; blue += lift * 2u;
+            if (red > 255u) red = 255u;
+            if (green > 255u) green = 255u;
+            if (blue > 255u) blue = 255u;
+            target[(size_t)y * w + x] =
                 0xFF000000u | red << 16 | green << 8 | blue;
         }
     }
 
-    int32_t logo_left = (int32_t)(display.width * 58u / 100u);
-    int32_t logo_right = (int32_t)(display.width * 88u / 100u);
-    int32_t logo_top = (int32_t)(display.height * 24u / 100u);
-    int32_t logo_middle_x = (int32_t)(display.width * 72u / 100u);
-    int32_t logo_middle_y = (int32_t)(display.height * 51u / 100u);
-    int32_t logo_bottom = (int32_t)(display.height * 80u / 100u);
-    uint32_t beam = 0x1859A6D8u;
-    draw_wallpaper_line(logo_left, logo_top, logo_middle_x, logo_middle_y, beam);
-    draw_wallpaper_line(logo_right, logo_top, logo_middle_x, logo_middle_y, beam);
-    draw_wallpaper_line(logo_right, logo_top, logo_left, logo_bottom, beam);
-    draw_wallpaper_line(logo_left, logo_bottom, logo_right, logo_bottom, beam);
-    draw_wallpaper_line((logo_middle_x + logo_right) / 2,
-                        (logo_middle_y + logo_bottom) / 2,
-                        logo_right, logo_bottom, beam);
+    /* Hourglass logo, right of centre, built from one connected stroke set. */
+    int32_t logo_h = (int32_t)(h * 46u / 100u);
+    int32_t scale_num = logo_h, scale_den = 353;
+    int32_t logo_w = 370 * scale_num / scale_den;
+    int32_t pad = 12;
+    int32_t mw = logo_w + pad * 2, mh = logo_h + pad * 2;
+    int32_t half16 = (int32_t)(14 * scale_num * 8 / scale_den);
+    if (half16 < 24) half16 = 24;
+    uint8_t* mask = wm_malloc((size_t)mw * (size_t)mh);
+    if (mask) {
+        memset(mask, 0, (size_t)mw * (size_t)mh);
+        draw_logo_mask(mask, mw, mh, pad, scale_num, scale_den, half16);
+        int32_t ox = (int32_t)(w * 74u / 100u) - mw / 2;
+        int32_t oy = (int32_t)(h * 47u / 100u) - mh / 2;
+        for (int32_t y = 0; y < mh; y++) {
+            for (int32_t x = 0; x < mw; x++) {
+                uint32_t cover = mask[(size_t)y * (uint32_t)mw + (uint32_t)x];
+                if (!cover) continue;
+                put_pixel(ox + x, oy + y,
+                          ((cover * 0x34u / 255u) << 24) | 0x00DCEBF7u);
+            }
+        }
+        wm_free(mask);
+    }
+    canvas = saved;
+}
+
+static void draw_wallpaper(void) {
+    if (!wallpaper) {
+        paint_wallpaper(canvas);
+        return;
+    }
+    memcpy(canvas, wallpaper,
+           (size_t)display.width * display.height * sizeof(uint32_t));
 }
 
 static void draw_desktop_icons(void) {
@@ -532,8 +653,12 @@ static void composite_window(const syscall_window_info_t* info,
         x + outer_width <= 0 || y + outer_height <= 0)
         return;
 
-    fill_rounded_rect(x + 3, y + 5, outer_width, outer_height,
-                      CORNER_RADIUS, 0x66000000u);
+    bool window_focused = info->id == focused_id;
+    fill_rounded_rect(x - 4, y - 1, outer_width + 8, outer_height + 10,
+                      CORNER_RADIUS + 4u, 0x16000000u);
+    fill_rounded_rect(x - 1, y + 2, outer_width + 2, outer_height + 4,
+                      CORNER_RADIUS + 1u, window_focused ? 0x40000000u
+                                                         : 0x24000000u);
     fill_rounded_rect(x, y, outer_width, outer_height,
                       CORNER_RADIUS, info->style.border);
     fill_rounded_rect(x + 1, y + 1, outer_width - 2, outer_height - 2,
@@ -543,6 +668,10 @@ static void composite_window(const syscall_window_info_t* info,
     fill_rounded_rect(x + 1, y + 1, outer_width - 2,
                       (int32_t)TITLE_HEIGHT, CORNER_RADIUS - 1u,
                       info->style.title_bar);
+    fill_rect(x + 1, y + (int32_t)TITLE_HEIGHT - 1, outer_width - 2, 1,
+              0x30000000u);
+    fill_rect(x + (int32_t)CORNER_RADIUS, y + 1,
+              outer_width - (int32_t)CORNER_RADIUS * 2, 1, 0x1CFFFFFFu);
 
     if (entry && entry->pixels) {
         int32_t content_x = x + 1;
@@ -582,29 +711,45 @@ static uint32_t opaque(uint32_t color) {
 static void draw_chrome_text(const syscall_window_info_t* info) {
     int32_t x = (int32_t)info->x;
     int32_t y = (int32_t)info->y;
+    int32_t outer_width = (int32_t)info->width + 2;
     int32_t right = x + (int32_t)info->width + 1;
     int32_t by = y + 5;
     int32_t close_x = right - 24;
     int32_t max_x = right - 48;
     int32_t min_x = right - 72;
+    bool focused = info->id == focused_id;
 
-    /* Title: 2x text, truncated to the room left of the buttons. */
+    /* Breeze-style centred title, dimmed when the window is not focused. */
     char title[SYSCALL_WINDOW_MAX_TITLE];
-    int32_t room = (min_x - 8) - (x + 12);
+    int32_t room = (min_x - 10) - (x + 12);
     uint32_t max_chars = room > 0 ? (uint32_t)room / 18u : 0u;
     fit_text(title, sizeof(title), info->title, max_chars);
-    wm_text(x + 12, y + ((int32_t)TITLE_HEIGHT - 16) / 2, title,
-            opaque(info->style.title_text), 0, 2);
+    int32_t text_width = (int32_t)moswm_text_width(title, 2);
+    int32_t text_x = x + (outer_width - text_width) / 2;
+    if (text_x + text_width > min_x - 10) text_x = min_x - 10 - text_width;
+    if (text_x < x + 12) text_x = x + 12;
+    uint32_t title_color = (info->style.title_text & 0x00FFFFFFu) |
+                           (focused ? 0xFF000000u : 0xA0000000u);
+    wm_text(text_x, y + ((int32_t)TITLE_HEIGHT - 16) / 2, title,
+            title_color, 0, 2);
 
-    fill_rect(close_x, by, 18, 18, opaque(info->style.close_button));
-    draw_wallpaper_line(close_x + 6, by + 6, close_x + 12, by + 12,
+    /* Round window buttons with crisp glyphs. */
+    fill_rounded_rect(close_x, by, 18, 18, 9, opaque(info->style.close_button));
+    draw_wallpaper_line(close_x + 6, by + 6, close_x + 11, by + 11,
                         opaque(info->style.close_icon));
-    draw_wallpaper_line(close_x + 12, by + 6, close_x + 6, by + 12,
+    draw_wallpaper_line(close_x + 7, by + 6, close_x + 12, by + 11,
                         opaque(info->style.close_icon));
-    fill_rect(max_x, by, 18, 18, opaque(info->style.maximize_button));
+    draw_wallpaper_line(close_x + 11, by + 6, close_x + 6, by + 11,
+                        opaque(info->style.close_icon));
+    draw_wallpaper_line(close_x + 12, by + 6, close_x + 7, by + 11,
+                        opaque(info->style.close_icon));
+    fill_rounded_rect(max_x, by, 18, 18, 9,
+                      opaque(info->style.maximize_button));
     stroke_rect(max_x + 5, by + 5, 8, 8, opaque(info->style.maximize_icon));
-    fill_rect(min_x, by, 18, 18, opaque(info->style.minimize_button));
-    fill_rect(min_x + 5, by + 12, 9, 1, opaque(info->style.minimize_icon));
+    fill_rect(max_x + 5, by + 5, 8, 2, opaque(info->style.maximize_icon));
+    fill_rounded_rect(min_x, by, 18, 18, 9,
+                      opaque(info->style.minimize_button));
+    fill_rect(min_x + 5, by + 11, 8, 2, opaque(info->style.minimize_icon));
 }
 
 static void draw_cursor(void) {
@@ -646,50 +791,134 @@ static void draw_cursor(void) {
     }
 }
 
+typedef struct {
+    uint16_t year;
+    uint8_t month, day, hour, minute, second;
+} moswm_datetime_t;
+
+static moswm_datetime_t clock_time;
+static bool clock_valid;
+static uint32_t clock_frames = 30u;
+
+static void update_clock(void) {
+    if (++clock_frames < 30u) return;
+    clock_frames = 0;
+    moswm_datetime_t now;
+    memset(&now, 0, sizeof(now));
+    clock_valid = mos_syscall1(SYS_GETTIME, (uint64_t)(uintptr_t)&now) ==
+                  SYS_SUCCESS && now.month >= 1 && now.month <= 12;
+    if (clock_valid) clock_time = now;
+}
+
+static bool pointer_in(int32_t x, int32_t y, int32_t w, int32_t h) {
+    return cursor_x >= x && cursor_x < x + w && cursor_y >= y &&
+           cursor_y < y + h;
+}
+
+/* The Minimal-OS hourglass at panel size: same geometry as the wallpaper. */
+static void draw_mini_logo(int32_t x, int32_t y, uint32_t color) {
+    for (int32_t i = 0; i < 2; i++) {
+        draw_wallpaper_line(x, y + i, x + 24, y + i, color);
+        draw_wallpaper_line(x, y + 24 - i, x + 24, y + 24 - i, color);
+        draw_wallpaper_line(x + 24 - i, y, x - i, y + 24, color);
+        draw_wallpaper_line(x + i, y, x + 11 + i, y + 11, color);
+        draw_wallpaper_line(x + 24 - i, y + 24, x + 13 - i, y + 13, color);
+    }
+}
+
 static void draw_taskbar(const syscall_window_info_t* windows,
                          uint64_t count) {
-    uint32_t top = display.height - TASKBAR_HEIGHT;
-    fill_rect(0, (int32_t)top, (int32_t)display.width,
-              (int32_t)TASKBAR_HEIGHT, 0xF0131A24u);
-    fill_rect(0, (int32_t)top, (int32_t)display.width, 1, 0xFF647786u);
-    fill_rect(49, (int32_t)top + 8, 1, 32, 0xFF33434Fu);
-    uint32_t x = 60;
-    for (uint64_t i = 0; i < count && x + 184 < display.width - 126; i++) {
+    static const char* const months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    int32_t top = (int32_t)display.height - (int32_t)TASKBAR_HEIGHT;
+    int32_t width = (int32_t)display.width;
+    uint32_t accent = 0xFF000000u | (accent_color & 0x00FFFFFFu);
+    update_clock();
+
+    /* Panel: dark, slightly translucent, with a faint highlight edge. */
+    fill_rect(0, top, width, (int32_t)TASKBAR_HEIGHT, 0xEC1B1E20u);
+    fill_rect(0, top, width, 1, 0x2CFFFFFFu);
+
+    /* Application launcher button. */
+    bool menu_hover = pointer_in(0, top, 44, (int32_t)TASKBAR_HEIGHT);
+    if (start_menu_open || menu_hover)
+        fill_rounded_rect(4, top + 4, 40, 40, 8,
+                          start_menu_open ? (0x66000000u | (accent & 0xFFFFFFu))
+                                          : 0x26FFFFFFu);
+    draw_mini_logo(12, top + 12, 0xFFEAF2F8u);
+    if (start_menu_open) fill_rect(8, top + 45, 32, 2, accent);
+
+    /* Task manager: one rounded entry per window, Plasma-style indicator. */
+    int32_t x = 60;
+    for (uint64_t i = 0; i < count && (uint32_t)x + 184u < display.width - 126u;
+         i++) {
         const syscall_window_info_t* info = &windows[i];
-        uint32_t color = info->id == focused_id ? 0xFF263945u : 0x00131A24u;
-        fill_rect((int32_t)x, (int32_t)top + 5, 176, 38, color);
-        if (info->id == focused_id)
-            fill_rect((int32_t)x, (int32_t)top + 45, 176, 2, accent_color);
+        bool focused = info->id == focused_id;
+        bool minimized = (info->flags & SYSCALL_WINDOW_MINIMIZED) != 0;
+        bool hovered = pointer_in(x, top + 5, 176, 38);
+        if (focused)
+            fill_rounded_rect(x, top + 5, 176, 38, 6, 0x38FFFFFFu);
+        else if (hovered)
+            fill_rounded_rect(x, top + 5, 176, 38, 6, 0x24FFFFFFu);
+        if (focused)
+            fill_rect(x + 6, top + 44, 164, 3, accent);
+        else
+            fill_rect(x + 78, top + 45, 20, 2,
+                      minimized ? 0x50FFFFFFu : 0xA0FFFFFFu);
         char label[SYSCALL_WINDOW_MAX_TITLE];
         fit_text(label, sizeof(label), info->title, 9);
-        wm_text((int32_t)x + 8, (int32_t)top + 16, label, 0xFFE0E9EFu, 0, 2);
+        wm_text(x + 10, top + 16, label,
+                minimized ? 0xFF8C9BA6u : 0xFFEAF2F8u, 0, 2);
         x += 180;
     }
     if (!count)
-        wm_text(64, (int32_t)top + 16, "MOSDESK", 0xFFE0E9EFu, 0, 2);
+        wm_text(60, top + 16, "MOSDESK", 0x80EAF2F8u, 0, 2);
 
-    int32_t logo_x = 12;
-    int32_t logo_y = (int32_t)top + 11;
-    uint32_t accent = 0xFF000000u | (accent_color & 0x00FFFFFFu);
-    draw_wallpaper_line(logo_x, logo_y, logo_x + 27, logo_y, accent);
-    draw_wallpaper_line(logo_x, logo_y, logo_x + 10, logo_y + 10, accent);
-    draw_wallpaper_line(logo_x + 27, logo_y, logo_x + 1, logo_y + 25, accent);
-    draw_wallpaper_line(logo_x + 1, logo_y + 25, logo_x + 27, logo_y + 25,
-                        accent);
-    draw_wallpaper_line(logo_x + 18, logo_y + 15, logo_x + 27, logo_y + 25,
-                        accent);
+    /* System tray: separator + two-line clock. */
+    if (clock_valid) {
+        char hhmm[6] = { (char)('0' + clock_time.hour / 10u),
+                         (char)('0' + clock_time.hour % 10u), ':',
+                         (char)('0' + clock_time.minute / 10u),
+                         (char)('0' + clock_time.minute % 10u), '\0' };
+        char date[8];
+        uint32_t di = 0;
+        if (clock_time.day >= 10u)
+            date[di++] = (char)('0' + clock_time.day / 10u);
+        date[di++] = (char)('0' + clock_time.day % 10u);
+        date[di++] = ' ';
+        for (uint32_t k = 0; k < 3u; k++)
+            date[di++] = months[clock_time.month - 1u][k];
+        date[di] = '\0';
+        int32_t center = width - 62;
+        fill_rect(width - 124, top + 10, 1, 28, 0x24FFFFFFu);
+        wm_text(center - (int32_t)moswm_text_width(hhmm, 2) / 2, top + 9,
+                hhmm, 0xFFEAF2F8u, 0, 2);
+        wm_text(center - (int32_t)moswm_text_width(date, 1) / 2, top + 30,
+                date, 0xFF9BAFBCu, 0, 1);
+    }
+
     if (start_menu_open) {
-        fill_rect(12, (int32_t)top - 268, 286, 258, 0xF018222Du);
-        fill_rect(12, (int32_t)top - 268, 3, 258, accent_color);
-        fill_rect(30, (int32_t)top - 223, 250, 1, 0xFF3B4A56u);
-        fill_rect(30, (int32_t)top - 166, 250, 36, 0xFF263945u);
-        fill_rect(30, (int32_t)top - 46, 250, 1, 0xFF3B4A56u);
+        /* Kickoff-style launcher: header, category, item list, footer. */
+        fill_rounded_rect(7, top - 271, 296, 268, 12, 0x2E000000u);
+        fill_rounded_rect(12, top - 268, 286, 258, 8, 0xFF3A4249u);
+        fill_rounded_rect(13, top - 267, 284, 256, 7, 0xFF1D2125u);
+        fill_rounded_rect(24, top - 260, 30, 30, 15, accent);
+        wm_text(32, top - 253, "M", 0xFFFFFFFFu, 0, 2);
+        wm_text(64, top - 262, "MOSdesk", 0xFFF2F6F9u, 0, 2);
+        wm_text(64, top - 242, "Minimal-OS", 0xFF9BAFBCu, 0, 1);
+        fill_rect(30, top - 223, 250, 1, 0xFF353C42u);
+        wm_text(30, top - 212, "SYSTEM", accent, 0, 1);
+        bool item_hover = pointer_in(18, top - 166, 274, 36);
+        if (item_hover)
+            fill_rounded_rect(20, top - 166, 270, 36, 6,
+                              0x55000000u | (accent & 0xFFFFFFu));
         moswm_draw_file_icon(canvas, display.width, display.height,
-            35, (int32_t)top - 163, MOSWM_ICON_SETTINGS);
-        wm_text(30, (int32_t)top - 254, "MOSdesk", 0xFFF2F6F9u, 0, 2);
-        wm_text(30, (int32_t)top - 220, "SYSTEM", 0xFF9BAFBCu, 0, 1);
-        wm_text(80, (int32_t)top - 156, "Settings", 0xFFF2F6F9u, 0, 2);
-        wm_text(30, (int32_t)top - 33, "Open windows from the panel", 0xFF9BAFBCu, 0, 1);
+                             35, top - 163, MOSWM_ICON_SETTINGS);
+        wm_text(80, top - 156, "Settings", 0xFFF2F6F9u, 0, 2);
+        fill_rect(30, top - 46, 250, 1, 0xFF353C42u);
+        wm_text(30, top - 33, "Open windows from the panel", 0xFF8A9AA6u, 0, 1);
     }
     if (status_message[0])
         wm_text(8, 8, status_message, 0xFFFFE696u, 0xAA000000u, 2);
@@ -1053,6 +1282,8 @@ static void cleanup(void) {
     }
     wm_free(canvas);
     canvas = NULL;
+    wm_free(wallpaper);
+    wallpaper = NULL;
     for (uint32_t i = 0; i < MAX_WINDOWS; i++) {
         wm_free(cache[i].pixels);
         memset(&cache[i], 0, sizeof(cache[i]));
@@ -1092,6 +1323,9 @@ int main(void) {
         cleanup();
         return 1;
     }
+    wallpaper = wm_malloc((size_t)display.width * display.height *
+                          sizeof(uint32_t));
+    if (wallpaper) paint_wallpaper(wallpaper);
     cursor_x = (int32_t)(display.width / 2u);
     cursor_y = (int32_t)(display.height / 2u);
     load_desktop_settings();
