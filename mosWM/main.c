@@ -6,6 +6,7 @@
 #include "string.h"
 #include "window.h"
 #include "file_icons.h"
+#include "wm_text.h"
 #define MOSDESK_SYSCALL mos_syscall3
 #include "../mosdesk/settings.h"
 
@@ -268,6 +269,40 @@ static void draw_wallpaper_line(int32_t x0, int32_t y0, int32_t x1,
     }
 }
 
+static void wm_text(int32_t x, int32_t y, const char* text, uint32_t color,
+                    uint32_t shadow, uint32_t scale) {
+    moswm_draw_text(canvas, display.width, display.height, x, y, text, color,
+                    shadow, scale);
+}
+
+static void stroke_rect(int32_t x, int32_t y, int32_t w, int32_t h,
+                        uint32_t color) {
+    fill_rect(x, y, w, 1, color);
+    fill_rect(x, y + h - 1, w, 1, color);
+    fill_rect(x, y, 1, h, color);
+    fill_rect(x + w - 1, y, 1, h, color);
+}
+
+/* Copies up to `max_chars` of `src` into `dst`, ending in ".." if cut. */
+static void fit_text(char* dst, size_t dst_size, const char* src,
+                     uint32_t max_chars) {
+    uint32_t len = 0;
+    while (src[len]) len++;
+    if (max_chars + 1u > dst_size) max_chars = (uint32_t)dst_size - 1u;
+    if (len <= max_chars) {
+        for (uint32_t i = 0; i <= len; i++) dst[i] = src[i];
+        return;
+    }
+    if (max_chars < 3u) {
+        dst[0] = '\0';
+        return;
+    }
+    for (uint32_t i = 0; i < max_chars - 2u; i++) dst[i] = src[i];
+    dst[max_chars - 2u] = '.';
+    dst[max_chars - 1u] = '.';
+    dst[max_chars] = '\0';
+}
+
 static void fill_rounded_rect(int32_t x, int32_t y, int32_t width,
                               int32_t height, uint32_t radius,
                               uint32_t color) {
@@ -333,8 +368,15 @@ static void draw_desktop_icons(void) {
         {MOSWM_ICON_CODE, "Source"}
     };
     for (uint32_t i = 0; i < sizeof(items) / sizeof(items[0]); i++)
+    {
+        int32_t icon_y = 30 + (int32_t)i * 66;
         moswm_draw_file_icon(canvas, display.width, display.height,
-                             24, 30 + (int32_t)i * 66, items[i].icon);
+                             40, icon_y, items[i].icon);
+        int32_t label_x = 56 - (int32_t)moswm_text_width(items[i].label, 2) / 2;
+        if (label_x < 4) label_x = 4;
+        wm_text(label_x, icon_y + 38, items[i].label, 0xFFF2F6F8u,
+                0x99000000u, 2);
+    }
 }
 
 static cached_window_t* cache_for(uint32_t id) {
@@ -478,6 +520,8 @@ static void sync_window_modes(syscall_window_info_t* windows, uint64_t count) {
     }
 }
 
+static void draw_chrome_text(const syscall_window_info_t* info);
+
 static void composite_window(const syscall_window_info_t* info,
                              cached_window_t* entry) {
     int32_t x = (int32_t)info->x;
@@ -528,61 +572,39 @@ static void composite_window(const syscall_window_info_t* info,
             }
         }
     }
+    draw_chrome_text(info);
+}
+
+static uint32_t opaque(uint32_t color) {
+    return 0xFF000000u | (color & 0x00FFFFFFu);
 }
 
 static void draw_chrome_text(const syscall_window_info_t* info) {
-    char title[SYSCALL_WINDOW_MAX_TITLE];
-    uint32_t i = 0;
-    while (i + 1u < sizeof(title) && info->title[i]) {
-        title[i] = info->title[i];
-        i++;
-    }
-    title[i] = '\0';
-    if (i > 24u) {
-        title[21] = '.';
-        title[22] = '.';
-        title[23] = '.';
-        title[24] = '\0';
-    }
-    mos_graphics_text(title, (int32_t)info->x + 12,
-                     (int32_t)info->y + 10,
-                     (uint8_t)(info->style.title_text >> 16),
-                     (uint8_t)(info->style.title_text >> 8),
-                     (uint8_t)info->style.title_text);
-
-    int32_t right = (int32_t)info->x + (int32_t)info->width + 1;
-    int32_t by = (int32_t)info->y + 5;
+    int32_t x = (int32_t)info->x;
+    int32_t y = (int32_t)info->y;
+    int32_t right = x + (int32_t)info->width + 1;
+    int32_t by = y + 5;
     int32_t close_x = right - 24;
     int32_t max_x = right - 48;
     int32_t min_x = right - 72;
-    mos_graphics_fill_rectangle(close_x, by, 18, 18,
-        (uint8_t)(info->style.close_button >> 16),
-        (uint8_t)(info->style.close_button >> 8),
-        (uint8_t)info->style.close_button);
-    mos_graphics_line(close_x + 6, by + 6, close_x + 12, by + 12,
-        (uint8_t)(info->style.close_icon >> 16),
-        (uint8_t)(info->style.close_icon >> 8),
-        (uint8_t)info->style.close_icon);
-    mos_graphics_line(close_x + 12, by + 6, close_x + 6, by + 12,
-        (uint8_t)(info->style.close_icon >> 16),
-        (uint8_t)(info->style.close_icon >> 8),
-        (uint8_t)info->style.close_icon);
-    mos_graphics_fill_rectangle(max_x, by, 18, 18,
-        (uint8_t)(info->style.maximize_button >> 16),
-        (uint8_t)(info->style.maximize_button >> 8),
-        (uint8_t)info->style.maximize_button);
-    mos_graphics_rectangle(max_x + 5, by + 5, 8, 8,
-        (uint8_t)(info->style.maximize_icon >> 16),
-        (uint8_t)(info->style.maximize_icon >> 8),
-        (uint8_t)info->style.maximize_icon);
-    mos_graphics_fill_rectangle(min_x, by, 18, 18,
-        (uint8_t)(info->style.minimize_button >> 16),
-        (uint8_t)(info->style.minimize_button >> 8),
-        (uint8_t)info->style.minimize_button);
-    mos_graphics_line(min_x + 5, by + 12, min_x + 13, by + 12,
-        (uint8_t)(info->style.minimize_icon >> 16),
-        (uint8_t)(info->style.minimize_icon >> 8),
-        (uint8_t)info->style.minimize_icon);
+
+    /* Title: 2x text, truncated to the room left of the buttons. */
+    char title[SYSCALL_WINDOW_MAX_TITLE];
+    int32_t room = (min_x - 8) - (x + 12);
+    uint32_t max_chars = room > 0 ? (uint32_t)room / 18u : 0u;
+    fit_text(title, sizeof(title), info->title, max_chars);
+    wm_text(x + 12, y + ((int32_t)TITLE_HEIGHT - 16) / 2, title,
+            opaque(info->style.title_text), 0, 2);
+
+    fill_rect(close_x, by, 18, 18, opaque(info->style.close_button));
+    draw_wallpaper_line(close_x + 6, by + 6, close_x + 12, by + 12,
+                        opaque(info->style.close_icon));
+    draw_wallpaper_line(close_x + 12, by + 6, close_x + 6, by + 12,
+                        opaque(info->style.close_icon));
+    fill_rect(max_x, by, 18, 18, opaque(info->style.maximize_button));
+    stroke_rect(max_x + 5, by + 5, 8, 8, opaque(info->style.maximize_icon));
+    fill_rect(min_x, by, 18, 18, opaque(info->style.minimize_button));
+    fill_rect(min_x + 5, by + 12, 9, 1, opaque(info->style.minimize_icon));
 }
 
 static void draw_cursor(void) {
@@ -638,8 +660,24 @@ static void draw_taskbar(const syscall_window_info_t* windows,
         fill_rect((int32_t)x, (int32_t)top + 5, 176, 38, color);
         if (info->id == focused_id)
             fill_rect((int32_t)x, (int32_t)top + 45, 176, 2, accent_color);
+        char label[SYSCALL_WINDOW_MAX_TITLE];
+        fit_text(label, sizeof(label), info->title, 9);
+        wm_text((int32_t)x + 8, (int32_t)top + 16, label, 0xFFE0E9EFu, 0, 2);
         x += 180;
     }
+    if (!count)
+        wm_text(64, (int32_t)top + 16, "MOSDESK", 0xFFE0E9EFu, 0, 2);
+
+    int32_t logo_x = 12;
+    int32_t logo_y = (int32_t)top + 11;
+    uint32_t accent = 0xFF000000u | (accent_color & 0x00FFFFFFu);
+    draw_wallpaper_line(logo_x, logo_y, logo_x + 27, logo_y, accent);
+    draw_wallpaper_line(logo_x, logo_y, logo_x + 10, logo_y + 10, accent);
+    draw_wallpaper_line(logo_x + 27, logo_y, logo_x + 1, logo_y + 25, accent);
+    draw_wallpaper_line(logo_x + 1, logo_y + 25, logo_x + 27, logo_y + 25,
+                        accent);
+    draw_wallpaper_line(logo_x + 18, logo_y + 15, logo_x + 27, logo_y + 25,
+                        accent);
     if (start_menu_open) {
         fill_rect(12, (int32_t)top - 268, 286, 258, 0xF018222Du);
         fill_rect(12, (int32_t)top - 268, 3, 258, accent_color);
@@ -648,7 +686,13 @@ static void draw_taskbar(const syscall_window_info_t* windows,
         fill_rect(30, (int32_t)top - 46, 250, 1, 0xFF3B4A56u);
         moswm_draw_file_icon(canvas, display.width, display.height,
             35, (int32_t)top - 163, MOSWM_ICON_SETTINGS);
+        wm_text(30, (int32_t)top - 254, "MOSdesk", 0xFFF2F6F9u, 0, 2);
+        wm_text(30, (int32_t)top - 220, "SYSTEM", 0xFF9BAFBCu, 0, 1);
+        wm_text(80, (int32_t)top - 156, "Settings", 0xFFF2F6F9u, 0, 2);
+        wm_text(30, (int32_t)top - 33, "Open windows from the panel", 0xFF9BAFBCu, 0, 1);
     }
+    if (status_message[0])
+        wm_text(8, 8, status_message, 0xFFFFE696u, 0xAA000000u, 2);
 }
 
 static void render(const syscall_window_info_t* windows, uint64_t count) {
@@ -676,60 +720,6 @@ static void render(const syscall_window_info_t* windows, uint64_t count) {
         strcpy(status_message, "Framebuffer update failed");
         return;
     }
-    for (uint64_t i = 0; i < count; i++) {
-        const syscall_window_info_t* info = &windows[i];
-        if (!(info->flags & SYSCALL_WINDOW_VISIBLE) ||
-            (info->flags & SYSCALL_WINDOW_MINIMIZED))
-            continue;
-        draw_chrome_text(info);
-    }
-    int32_t logo_x = 12;
-    int32_t logo_y = (int32_t)display.height - (int32_t)TASKBAR_HEIGHT + 11;
-    uint8_t accent_red = (uint8_t)(accent_color >> 16u);
-    uint8_t accent_green = (uint8_t)(accent_color >> 8u);
-    uint8_t accent_blue = (uint8_t)accent_color;
-    mos_graphics_line(logo_x, logo_y, logo_x + 27, logo_y,
-                      accent_red, accent_green, accent_blue);
-    mos_graphics_line(logo_x, logo_y, logo_x + 10, logo_y + 10,
-                      accent_red, accent_green, accent_blue);
-    mos_graphics_line(logo_x + 27, logo_y, logo_x + 1, logo_y + 25,
-                      accent_red, accent_green, accent_blue);
-    mos_graphics_line(logo_x + 1, logo_y + 25, logo_x + 27, logo_y + 25,
-                      accent_red, accent_green, accent_blue);
-    mos_graphics_line(logo_x + 18, logo_y + 15, logo_x + 27, logo_y + 25,
-                      accent_red, accent_green, accent_blue);
-    mos_graphics_text("MOSDESK", 64, (int32_t)display.height - 31,
-                     224, 233, 239);
-    static const char* desktop_labels[] = {
-        "Home", "System", "Readme", "Source"
-    };
-    for (uint32_t i = 0; i < 4; i++)
-        mos_graphics_text(desktop_labels[i], 21,
-            65 + (int32_t)i * 66, 234, 241, 245);
-    uint32_t x = 64;
-    for (uint64_t i = 0; i < count && x + 172 < display.width - 126; i++) {
-        char title[SYSCALL_WINDOW_MAX_TITLE];
-        uint32_t j = 0;
-        while (j < 10 && windows[i].title[j]) {
-            title[j] = windows[i].title[j];
-            j++;
-        }
-        title[j] = '\0';
-        mos_graphics_text(title, (int32_t)x + 8,
-            (int32_t)display.height - 29, 224, 233, 239);
-        x += 180;
-    }
-    if (start_menu_open) {
-        int32_t top = (int32_t)display.height - (int32_t)TASKBAR_HEIGHT;
-        mos_graphics_text("MOSdesk", 30, top - 254, 242, 246, 249);
-        mos_graphics_text("SYSTEM", 30, top - 220, 155, 175, 188);
-        mos_graphics_text("MOSdesk Settings", 42, top - 154,
-                          242, 246, 249);
-        mos_graphics_text("Open windows from the panel", 30, top - 33,
-                          155, 175, 188);
-    }
-    if (status_message[0])
-        mos_graphics_text(status_message, 8, 8, 255, 230, 150);
     if (mos_graphics_present(0, 0, (int32_t)display.width,
                              (int32_t)display.height) != SYS_SUCCESS)
         strcpy(status_message, "Display present failed");
